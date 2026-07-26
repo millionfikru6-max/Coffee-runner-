@@ -1,0 +1,145 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Baloo 2", "Trebuchet MS", Georgia, ui-rounded, ui-sans-serif, system-ui, sans-serif;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #1a1208;
+  -webkit-tap-highlight-color: transparent;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
+}
+
+body {
+  overscroll-behavior: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Ethiopian flag accent stripe */
+.flag-stripe {
+  background: linear-gradient(
+    90deg,
+    #078930 0%,
+    #078930 33%,
+    #fcdd09 33%,
+    #fcdd09 66%,
+    #da121a 66%,
+    #da121a 100%
+  );
+}
+
+/* ---- keyframes ---- */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+  60% {
+    transform: scale(1.05);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes floaty {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-7px);
+  }
+}
+@keyframes shine-sweep {
+  0% {
+    transform: translateX(-120%) skewX(-20deg);
+  }
+  100% {
+    transform: translateX(220%) skewX(-20deg);
+  }
+}
+@keyframes gesture-lr {
+  0%,
+  100% {
+    transform: translateX(-8px);
+  }
+  50% {
+    transform: translateX(8px);
+  }
+}
+@keyframes gesture-up {
+  0%,
+  100% {
+    transform: translateY(6px);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+@keyframes gesture-down {
+  0%,
+  100% {
+    transform: translateY(-6px);
+  }
+  50% {
+    transform: translateY(8px);
+  }
+}
+
+.anim-fade-up {
+  animation: fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.anim-pop {
+  animation: pop 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.anim-float {
+  animation: floaty 2.6s ease-in-out infinite;
+}
+.anim-gesture-lr {
+  animation: gesture-lr 1s ease-in-out infinite;
+}
+.anim-gesture-up {
+  animation: gesture-up 1s ease-in-out infinite;
+}
+.anim-gesture-down {
+  animation: gesture-down 1s ease-in-out infinite;
+}
+
+/* glossy sweep on the primary play button */
+.btn-shine {
+  position: relative;
+  overflow: hidden;
+}
+.btn-shine::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 45%;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.28) 50%, rgba(255, 255, 255, 0) 100%);
+  animation: shine-sweep 2.8s ease-in-out infinite;
+}
