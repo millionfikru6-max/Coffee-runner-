@@ -6,7 +6,7 @@ import type {
   RunSummary,
 } from './types';
 
-const PROFILE_KEY = 'coffee-runner-profile-v2';
+import { SaveStore } from './save';
 
 /* ---------------------------------- defs ---------------------------------- */
 
@@ -356,8 +356,11 @@ function rollMissions(p: Profile): Profile {
 /* -------------------------------- persistence ------------------------------ */
 
 export function resetProgress(): Profile {
+  store.clear();
   const p = defaultProfile();
-  saveProfile(p);
+  cached = p;
+  store.save(p);
+  store.flush();
   return p;
 }
 
@@ -367,36 +370,170 @@ export function markTutorialDone(p: Profile): Profile {
   return next;
 }
 
-export function loadProfile(): Profile {
-  let p: Profile;
-  try {
-    const raw = localStorage.getItem(PROFILE_KEY);
-    if (!raw) {
-      p = defaultProfile();
-    } else {
-      const parsed = JSON.parse(raw) as Profile;
-      p = {
-        ...defaultProfile(),
-        ...parsed,
-        inventory: { ...emptyInventory(), ...parsed.inventory },
-        stats: { ...defaultProfile().stats, ...parsed.stats },
-        daily: { ...defaultProfile().daily, ...parsed.daily },
-      };
+/**
+ * Repair a loaded profile: fill anything missing, drop references to content
+ * that no longer exists, and clamp values that a corrupt save (or a tampered
+ * one) could otherwise use to break the economy.
+ */
+function normaliseProfile(raw: Record<string, unknown>, defaults: Profile): Profile {
+  const r = raw as Partial<Profile>;
+  const clampNum = (v: unknown, min: number, max: number, fallback: number) =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.max(min, Math.min(max, Math.floor(v))) : fallback;
+
+  const ownedCharacters = Array.isArray(r.ownedCharacters)
+    ? r.ownedCharacters.filter((id) => CHARACTERS.some((c) => c.id === id))
+    : [...defaults.ownedCharacters];
+  if (!ownedCharacters.includes('abebe')) ownedCharacters.push('abebe');
+
+  const ownedOutfits = Array.isArray(r.ownedOutfits)
+    ? r.ownedOutfits.filter((id) => OUTFITS.some((o) => o.id === id))
+    : [...defaults.ownedOutfits];
+  if (!ownedOutfits.includes('shamma')) ownedOutfits.push('shamma');
+
+  // Never leave the player equipped to something they don't own.
+  const character = ownedCharacters.includes(r.character as string)
+    ? (r.character as string)
+    : 'abebe';
+  const outfit = ownedOutfits.includes(r.outfit as string) ? (r.outfit as string) : 'shamma';
+
+  const inventory = { ...emptyInventory() };
+  if (r.inventory && typeof r.inventory === 'object') {
+    for (const k of Object.keys(inventory) as PowerUpId[]) {
+      inventory[k] = clampNum((r.inventory as Record<string, unknown>)[k], 0, 99, 0);
     }
-  } catch {
-    p = defaultProfile();
   }
+
+  const equipped = Array.isArray(r.equipped)
+    ? (r.equipped.filter((id) => id in inventory && inventory[id as PowerUpId] > 0) as PowerUpId[]).slice(0, 3)
+    : [];
+
+  const missions = Array.isArray(r.missions)
+    ? r.missions
+        .filter((m) => m && typeof m.id === 'string' && missionDef(m.id))
+        .map((m) => ({
+          id: m.id,
+          progress: clampNum(m.progress, 0, 1e9, 0),
+          claimed: !!m.claimed,
+        }))
+    : [];
+
+  const leaderboard = Array.isArray(r.leaderboard)
+    ? r.leaderboard
+        .filter((e) => e && typeof e.score === 'number' && Number.isFinite(e.score))
+        .map((e) => ({
+          name: String(e.name ?? 'Runner').slice(0, 24),
+          emoji: String(e.emoji ?? '🏃').slice(0, 8),
+          score: clampNum(e.score, 0, 1e12, 0),
+          distance: clampNum(e.distance, 0, 1e9, 0),
+          biome: String(e.biome ?? 'highlands').slice(0, 40),
+          date: typeof e.date === 'string' ? e.date : new Date().toISOString(),
+        }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 10)
+    : [];
+
+  const stats: LifetimeStats = {
+    ...defaults.stats,
+    ...(r.stats && typeof r.stats === 'object' ? r.stats : {}),
+    deaths: { ...((r.stats as LifetimeStats | undefined)?.deaths ?? {}) },
+    biomesSeen: Array.isArray((r.stats as LifetimeStats | undefined)?.biomesSeen)
+      ? ((r.stats as LifetimeStats).biomesSeen as Biome[]).filter((b) =>
+          ['coffee_highlands', 'traditional_village', 'addis_ababa', 'simien_mountains', 'blue_nile'].includes(b),
+        )
+      : [],
+  };
+
+  return {
+    ...defaults,
+    version: SAVE_PROFILE_VERSION,
+    coins: clampNum(r.coins, 0, 1e9, defaults.coins),
+    gems: clampNum(r.gems, 0, 1e6, defaults.gems),
+    character,
+    outfit,
+    ownedCharacters,
+    ownedOutfits,
+    inventory,
+    equipped,
+    missions,
+    missionDay: typeof r.missionDay === 'string' ? r.missionDay : '',
+    achievements:
+      r.achievements && typeof r.achievements === 'object'
+        ? (r.achievements as Record<string, boolean>)
+        : {},
+    daily: {
+      lastClaim: typeof r.daily?.lastClaim === 'string' ? r.daily.lastClaim : null,
+      streak: clampNum(r.daily?.streak, 0, 3650, 0),
+    },
+    leaderboard,
+    stats,
+    tutorialDone: !!r.tutorialDone,
+  };
+}
+
+const SAVE_PROFILE_VERSION = 3;
+
+const store = new SaveStore<Profile>({
+  defaults: defaultProfile,
+  normalise: normaliseProfile,
+  migrations: {
+    // v2 (original build) → v3: leaderboard entries gained a biome label and
+    // the inventory gained the 'slow' power-up.
+    2: (d) => {
+      const p = d as Partial<Profile>;
+      return {
+        ...p,
+        inventory: { magnet: 0, shield: 0, double: 0, superJump: 0, slow: 0, ...(p.inventory ?? {}) },
+        leaderboard: (p.leaderboard ?? []).map((e) => ({
+          ...e,
+          biome: e.biome ?? 'highlands',
+          emoji: e.emoji ?? '🏃',
+        })),
+        version: 3,
+      };
+    },
+  },
+});
+
+let cached: Profile | null = null;
+
+export function loadProfile(): Profile {
+  const result = store.load();
+  let p = result.data;
   p = rollMissions(p);
-  saveProfile(p);
+  cached = p;
+  store.save(p);
   return p;
 }
 
 export function saveProfile(p: Profile): void {
-  try {
-    localStorage.setItem(PROFILE_KEY, JSON.stringify(p));
-  } catch {
-    /* storage full / unavailable — game still playable */
-  }
+  cached = p;
+  store.save(p);
+}
+
+/** Force any queued write to disk right now. */
+export function flushProfile(): void {
+  store.flush();
+}
+
+/** Portable save code for moving between devices. */
+export function exportProfile(p: Profile): string {
+  return store.export(p);
+}
+
+/** Returns null when the code is malformed or fails its checksum. */
+export function importProfile(code: string): Profile | null {
+  const p = store.import(code);
+  if (!p) return null;
+  const rolled = rollMissions(p);
+  cached = rolled;
+  store.save(rolled);
+  store.flush();
+  return rolled;
+}
+
+/** Last profile handed out by load/save, for callers that need it cheaply. */
+export function currentProfile(): Profile | null {
+  return cached;
 }
 
 /* --------------------------------- actions --------------------------------- */

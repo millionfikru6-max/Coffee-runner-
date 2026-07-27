@@ -286,5 +286,181 @@ console.log('\n== audio graph ==');
   check('panned sfx create panners', pannerCount > 0, `${pannerCount}`);
 }
 
+console.log('\n== save system ==');
+{
+  const { installStorageMock } = await import('./storageMock');
+  const storage = installStorageMock();
+  const { SaveStore, SAVE_VERSION } = await import('../src/game/save');
+
+  interface Demo { version: number; coins: number; name: string; list: number[] }
+  const defaults = (): Demo => ({ version: SAVE_VERSION, coins: 100, name: 'Runner', list: [] });
+  const normalise = (raw: Record<string, unknown>, d: Demo): Demo => ({
+    version: SAVE_VERSION,
+    coins: typeof raw.coins === 'number' && Number.isFinite(raw.coins) ? Math.max(0, Math.floor(raw.coins)) : d.coins,
+    name: typeof raw.name === 'string' ? raw.name.slice(0, 24) : d.name,
+    list: Array.isArray(raw.list) ? raw.list.filter((n) => typeof n === 'number') : [],
+  });
+  const mk = () => new SaveStore<Demo>({ defaults, normalise, migrations: {
+    2: (d) => ({ ...d, migrated: true, version: 3 }),
+  } }, 0);
+
+  // --- round trip ---
+  storage.clear();
+  let store = mk();
+  check('fresh load returns defaults', store.load().source === 'fresh');
+  const saved: Demo = { version: SAVE_VERSION, coins: 4321, name: 'Abebe', list: [1, 2, 3] };
+  store.save(saved); store.flush();
+  store = mk();
+  let r = store.load();
+  check('round trips through storage', r.data.coins === 4321 && r.data.name === 'Abebe', JSON.stringify(r.data));
+
+  // --- A/B slots survive a crash mid-write ---
+  store.save({ ...saved, coins: 5555 }); store.flush();
+  store.save({ ...saved, coins: 6666 }); store.flush();
+  const keys = [...storage.raw().keys()].filter((k) => k.includes('save-'));
+  check('uses two alternating slots', keys.length >= 2, keys.join(','));
+  // Corrupt the newest slot the way a killed tab would.
+  const newest = keys.find((k) => k.endsWith('-a')) ?? keys[0];
+  storage.truncate(newest, 0.5);
+  store = mk();
+  r = store.load();
+  check('recovers from a truncated slot', r.data.coins > 0 && r.source === 'backup', `${r.source} coins=${r.data.coins}`);
+
+  // --- checksum rejects tampering ---
+  storage.clear();
+  store = mk();
+  store.save({ ...saved, coins: 10 }); store.flush();
+  const slotKey = [...storage.raw().keys()].find((k) => k.includes('save-'))!;
+  const env = JSON.parse(storage.getItem(slotKey)!);
+  env.data.coins = 999999999; // cheat attempt, checksum now mismatches
+  storage.setItem(slotKey, JSON.stringify(env));
+  store = mk();
+  r = store.load();
+  check('rejects tampered payload', r.data.coins !== 999999999, `coins=${r.data.coins}`);
+
+  // --- both slots destroyed → clean defaults, no crash ---
+  storage.clear();
+  storage.setItem('coffee-runner-save-a', '{not json');
+  storage.setItem('coffee-runner-save-b', 'also garbage');
+  store = mk();
+  r = store.load();
+  check('total corruption falls back to defaults', r.source === 'fresh' && r.data.coins === 100);
+
+  // --- legacy import ---
+  storage.clear();
+  storage.setItem('coffee-runner-profile-v2', JSON.stringify({ version: 2, coins: 777, name: 'Legacy', list: [9] }));
+  store = mk();
+  r = store.load();
+  check('imports legacy save', r.source === 'legacy' && r.data.coins === 777, `${r.source} ${r.data.coins}`);
+  check('legacy import records migration', r.migratedFrom === 2, `${r.migratedFrom}`);
+
+  // --- quota handling ---
+  storage.clear();
+  store = mk();
+  store.save(saved); store.flush();
+  storage.failWrites = true;
+  store.save({ ...saved, coins: 1 });
+  store.flush();
+  storage.failWrites = false;
+  store = mk();
+  r = store.load();
+  check('quota failure keeps the previous good save', r.data.coins === 4321, `coins=${r.data.coins}`);
+
+  // --- throttling: many saves, few writes ---
+  storage.clear();
+  const throttled = new SaveStore<Demo>({ defaults, normalise, migrations: {} }, 10_000);
+  const before = storage.writes;
+  for (let i = 0; i < 500; i++) throttled.save({ ...saved, coins: i });
+  throttled.flush();
+  const writes = storage.writes - before;
+  check('throttles bursts of saves', writes <= 6, `${writes} writes for 500 saves`);
+  check('flush persists the latest value', (() => {
+    const s2 = new SaveStore<Demo>({ defaults, normalise, migrations: {} }, 0);
+    return s2.load().data.coins === 499;
+  })(), 'latest');
+
+  // --- export / import ---
+  const code = store.export({ version: SAVE_VERSION, coins: 8080, name: 'Tigist ✨', list: [4, 5] });
+  check('export produces a code', code.length > 0);
+  const imported = store.import(code);
+  check('import round trips unicode', imported?.coins === 8080 && imported?.name === 'Tigist ✨', JSON.stringify(imported));
+  check('import rejects garbage', store.import('not-a-code') === null);
+  check('import rejects mutated code', store.import(code.slice(0, -4) + 'AAAA') === null);
+
+  // --- clear ---
+  store.clear();
+  store = mk();
+  check('clear wipes everything', store.load().source === 'fresh');
+}
+
+console.log('\n== profile integrity ==');
+{
+  const { installStorageMock } = await import('./storageMock');
+  installStorageMock();
+  const prog = await import('../src/game/progression');
+
+  const fresh = prog.loadProfile();
+  check('fresh profile valid', fresh.coins >= 0 && fresh.ownedCharacters.includes('abebe'));
+  check('fresh profile has 3 missions', fresh.missions.length === 3, `${fresh.missions.length}`);
+
+  // Simulate a save that references content that no longer exists and has
+  // impossible values — normalise() must make it safe rather than crash.
+  (globalThis as any).localStorage.clear();
+  (globalThis as any).localStorage.setItem('coffee-runner-profile-v2', JSON.stringify({
+    version: 2,
+    coins: -500,
+    gems: Number.NaN,
+    character: 'does-not-exist',
+    outfit: 'also-gone',
+    ownedCharacters: ['abebe', 'ghost'],
+    ownedOutfits: ['phantom'],
+    inventory: { magnet: 1e9, shield: -3 },
+    equipped: ['magnet', 'nope', 'shield'],
+    missions: [{ id: 'fake', progress: 5, claimed: false }],
+    leaderboard: [{ name: 'x'.repeat(200), score: 'NaN' }, { name: 'ok', score: 50, distance: 10 }],
+    daily: { lastClaim: 12345, streak: -9 },
+    stats: { biomesSeen: ['coffee_highlands', 'atlantis'] },
+  }));
+  const repaired = prog.loadProfile();
+  check('negative coins clamped', repaired.coins >= 0, `${repaired.coins}`);
+  check('NaN gems replaced', Number.isFinite(repaired.gems), `${repaired.gems}`);
+  check('unknown character reset', repaired.character === 'abebe', repaired.character);
+  check('unknown outfit reset', repaired.outfit === 'shamma', repaired.outfit);
+  check('ghost characters dropped', !repaired.ownedCharacters.includes('ghost'));
+  check('default outfit restored', repaired.ownedOutfits.includes('shamma'));
+  check('inventory clamped', repaired.inventory.magnet <= 99 && repaired.inventory.shield >= 0, JSON.stringify(repaired.inventory));
+  check('equipped filtered to owned', repaired.equipped.every((e) => e in repaired.inventory));
+  check('unknown missions dropped then rerolled', repaired.missions.every((m) => prog.missionDef(m.id)));
+  check('bad leaderboard rows dropped', repaired.leaderboard.every((e) => Number.isFinite(e.score)));
+  check('long names truncated', repaired.leaderboard.every((e) => e.name.length <= 24));
+  check('bad daily claim nulled', repaired.daily.lastClaim === null || typeof repaired.daily.lastClaim === 'string');
+  check('negative streak clamped', repaired.daily.streak >= 0, `${repaired.daily.streak}`);
+  check('invalid biome dropped', !repaired.stats.biomesSeen.includes('atlantis' as never));
+
+  // recordRun must persist and stay consistent over many runs
+  let p = prog.loadProfile();
+  for (let i = 0; i < 60; i++) {
+    const res = prog.recordRun(p, {
+      score: 1000 + i * 37, distance: 200 + i, beans: 20, coins: 15, specials: 2,
+      maxCombo: 8, jumps: 12, slides: 5, nearMisses: 3, powerupsUsed: 1,
+      nightDistance: 20, biomesVisited: ['coffee_highlands'], deathBy: 'rock', durationSec: 45,
+    });
+    p = res.profile;
+  }
+  check('leaderboard capped at 10', p.leaderboard.length === 10, `${p.leaderboard.length}`);
+  check('leaderboard sorted desc', p.leaderboard.every((e, i, a) => i === 0 || a[i-1].score >= e.score));
+  check('coins accumulated', p.coins > fresh.coins, `${p.coins}`);
+  check('best score tracked', p.stats.bestScore >= 1000 + 59 * 37, `${p.stats.bestScore}`);
+  check('run count correct', p.stats.runs === 60, `${p.stats.runs}`);
+
+  prog.flushProfile();
+  const reloaded = prog.loadProfile();
+  check('progress survives reload', reloaded.stats.runs === 60 && reloaded.leaderboard.length === 10, `runs=${reloaded.stats.runs}`);
+
+  const code = prog.exportProfile(reloaded);
+  const back = prog.importProfile(code);
+  check('profile export/import preserves stats', back?.stats.runs === 60 && back?.coins === reloaded.coins);
+}
+
 console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`);
 process.exit(failures === 0 ? 0 : 1);
