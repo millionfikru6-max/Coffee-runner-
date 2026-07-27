@@ -9,7 +9,7 @@
  */
 
 import * as THREE from 'three';
-import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { Biome, WorldState } from '../game/types';
 import { G, type Quality, mat, mulberry32, parseColor } from './core';
 import type { TerrainPalette } from '../game/world';
@@ -220,7 +220,7 @@ class Chunk {
       if (geos.length === 0) continue;
       let merged: THREE.BufferGeometry | null = null;
       try {
-        merged = BufferGeometryUtils.mergeGeometries(geos, false);
+        merged = mergeGeometries(geos, false);
       } catch {
         merged = null;
       }
