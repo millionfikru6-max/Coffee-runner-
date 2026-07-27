@@ -169,5 +169,44 @@ console.log('\n== camera ==');
   check('shake decays', true);
 }
 
+console.log('\n== perf governor ==');
+{
+  const { PerfGovernor } = await import('../src/game/perf');
+  // A device that is consistently too slow must shed resolution then tier.
+  let clock = 0;
+  const tick = () => clock;
+  const slow = new PerfGovernor('high', true, tick);
+  let lastState = slow.state;
+  for (let i = 0; i < 4000; i++) {
+    clock += 16;
+    const r = slow.sample(1000 / 30);
+    if (r) lastState = r;
+  }
+  check('slow device reduced render scale', lastState.scale < 1, `scale=${lastState.scale.toFixed(2)}`);
+  check('slow device scale respects floor', lastState.scale >= 0.55, `${lastState.scale}`);
+
+  clock = 0;
+  const fast = new PerfGovernor('low', true, tick);
+  let fastState = fast.state;
+  for (let i = 0; i < 4000; i++) {
+    clock += 16;
+    const r = fast.sample(1000 / 120);
+    if (r) fastState = r;
+  }
+  check('fast device restored full scale', fastState.scale >= 0.99, `scale=${fastState.scale.toFixed(2)}`);
+  check('fast device promoted tier', fastState.tier === 'high', fastState.tier);
+
+  // Spikes must not cause thrash.
+  clock = 0;
+  const stable = new PerfGovernor('high', true, tick);
+  let changes = 0;
+  for (let i = 0; i < 2000; i++) {
+    clock += 16;
+    const r = stable.sample(i % 200 === 0 ? 400 : 1000 / 61);
+    if (r) changes++;
+  }
+  check('ignores spikes without thrashing', changes <= 2, `${changes} changes`);
+}
+
 console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`);
 process.exit(failures === 0 ? 0 : 1);

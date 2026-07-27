@@ -157,13 +157,30 @@ export class Scene3D {
     this.env.setQuality(q);
   }
 
+  private baseDpr = 1;
+  private renderScale = 1;
+
   resize(w: number, h: number, dpr: number) {
     this.width = w;
     this.height = h;
-    this.renderer.setPixelRatio(dpr);
-    this.renderer.setSize(w, h, false);
+    this.baseDpr = dpr;
+    this.applyResolution();
     this.chase.resize(w / h);
-    this.particles.setPixelScale(Math.min(2, dpr) * (h / 800));
+  }
+
+  /** Adaptive render scale from the perf governor (0.55 - 1.0). */
+  setRenderScale(scale: number) {
+    if (Math.abs(scale - this.renderScale) < 0.01) return;
+    this.renderScale = scale;
+    this.applyResolution();
+  }
+
+  private applyResolution() {
+    if (!this.width || !this.height) return;
+    const dpr = Math.max(0.5, this.baseDpr * this.renderScale);
+    this.renderer.setPixelRatio(dpr);
+    this.renderer.setSize(this.width, this.height, false);
+    this.particles.setPixelScale(Math.min(2, dpr) * (this.height / 800));
   }
 
   private poolFor(

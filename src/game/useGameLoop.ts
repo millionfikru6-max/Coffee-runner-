@@ -26,6 +26,8 @@ import {
   toggleEquip,
 } from './progression';
 import { shareRun } from './share';
+import { GestureController } from './controls';
+import { PerfGovernor, detectInitialTier } from './perf';
 
 export interface HudData {
   score: number;
@@ -80,7 +82,8 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
   const rafRef = useRef<number>(0);
   const lastRef = useRef<number>(0);
   const stateRef = useRef<GameState>('menu');
-  const touchRef = useRef<{ x: number; y: number; t: number } | null>(null);
+  const gestureRef = useRef<GestureController | null>(null);
+  const perfRef = useRef<PerfGovernor | null>(null);
 
   const [gameState, setGameState] = useState<GameState>('menu');
   const [hud, setHud] = useState<HudData>(initialHud);
@@ -151,6 +154,7 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     const engine = engineRef.current;
     if (engine) engine.settings = settings;
     rendererRef.current?.setQuality(settings.quality);
+    perfRef.current?.setTier(settings.quality, true);
     if (settings.quality === 'low') syncSize();
   }, [settings, syncSize]);
 
@@ -167,6 +171,10 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     engine.setAppearance(buildAppearance(profileRef.current));
     engineRef.current = engine;
     rendererRef.current = renderer;
+    perfRef.current = new PerfGovernor(
+      settings.quality === 'low' ? 'low' : detectInitialTier(),
+      settings.quality !== 'low',
+    );
     syncSize();
     renderer.render(engine);
 
@@ -233,6 +241,7 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
       const state = stateRef.current;
 
       if (state === 'playing') {
+        gestureRef.current?.tick();
         engine.update(dt);
         if (!engine.alive) {
           endGame();
@@ -272,6 +281,16 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
 
       if (state === 'menu' || state === 'settings') renderer.renderMenu(engine);
       else renderer.render(engine);
+
+      // Adaptive quality: measure real frame cost and scale to hold 60fps.
+      const gov = perfRef.current;
+      if (gov && state === 'playing') {
+        const next = gov.sample(dt * 1000);
+        if (next) {
+          renderer.setRenderScale(next.scale);
+          renderer.setQuality(next.tier);
+        }
+      }
       rafRef.current = requestAnimationFrame(loop);
     },
     [endGame],
@@ -499,50 +518,20 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-
-    const onStart = (e: PointerEvent) => {
-      touchRef.current = { x: e.clientX, y: e.clientY, t: performance.now() };
-    };
-
-    const onEnd = (e: PointerEvent) => {
-      const start = touchRef.current;
-      touchRef.current = null;
-      if (!start) return;
-      if (stateRef.current !== 'playing') return;
-
-      const dx = e.clientX - start.x;
-      const dy = e.clientY - start.y;
-      const adx = Math.abs(dx);
-      const ady = Math.abs(dy);
-      const dt = performance.now() - start.t;
-      if (dt > 600) return;
-      const min = 28;
-
-      const engine = engineRef.current;
-      if (!engine) return;
-
-      if (adx < min && ady < min) {
-        engine.jump();
-        return;
-      }
-
-      if (adx > ady) {
-        if (dx > 0) engine.moveLane(1);
-        else engine.moveLane(-1);
-      } else {
-        if (dy < 0) engine.jump();
-        else engine.slide();
-      }
-    };
-
-    el.addEventListener('pointerdown', onStart);
-    el.addEventListener('pointerup', onEnd);
-    el.addEventListener('pointercancel', () => {
-      touchRef.current = null;
+    const ctrl = new GestureController(el, {
+      moveLane: (d) => engineRef.current?.moveLane(d),
+      jump: () => engineRef.current?.jump(),
+      slide: () => engineRef.current?.slide(),
+      isPlaying: () => stateRef.current === 'playing',
+      isAirborne: () => !!engineRef.current?.player.jumping,
+      vibrate: (ms) => {
+        if (settingsRef.current.vibrate && navigator.vibrate) navigator.vibrate(ms);
+      },
     });
+    gestureRef.current = ctrl;
     return () => {
-      el.removeEventListener('pointerdown', onStart);
-      el.removeEventListener('pointerup', onEnd);
+      ctrl.dispose();
+      gestureRef.current = null;
     };
   }, [containerRef]);
 
