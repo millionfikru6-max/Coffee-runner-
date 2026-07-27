@@ -102,6 +102,14 @@ for (let i = 0; i < 9000; i++) {
   }
   // Force a death occasionally so the game-over path is still covered.
   if (i === 4000) { engine.player.invincible = 0; engine.alive = false; }
+
+  // Weather is random, so cycle it deliberately rather than hoping the RNG
+  // covers every case — this keeps the test deterministic.
+  if (i % 900 === 0) {
+    const all = ['clear', 'rain', 'overcast', 'golden', 'storm'] as const;
+    engine.world.weather = all[(i / 900) % all.length];
+    engine.world.weatherTimer = 30;
+  }
   if (i % 41 === 0) engine.moveLane(Math.random() < 0.5 ? -1 : 1);
   if (i % 59 === 0) engine.jump();
   if (i % 97 === 0) engine.slide();
@@ -109,7 +117,7 @@ for (let i = 0; i < 9000; i++) {
 
 check(`rendered ${frames} frames without throwing`, true);
 check('visited every biome', seenBiomes.size === 5, [...seenBiomes].join(','));
-check('exercised multiple weathers', seenWeather.size >= 3, [...seenWeather].join(','));
+check('exercised every weather state', seenWeather.size === 5, [...seenWeather].join(','));
 check('exercised day and night', seenTod.size >= 3, [...seenTod].join(','));
 check('handled deaths and restarts', deaths > 0, `${deaths}`);
 
