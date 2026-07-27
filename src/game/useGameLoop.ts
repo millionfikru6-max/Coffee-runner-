@@ -3,7 +3,9 @@ import { GameEngine } from './engine';
 import { Scene3D } from '../game3d/scene3d';
 import type { Appearance, Effects, GameState, RunSummary, Settings } from './types';
 import { loadSettings, saveSettings } from './storage';
-import { setAudioEnabled, sfx } from './audio';
+import { setAudioEnabled, setSfxOutput, sfx, sfxAt, sfxCentre } from './audio';
+import { buses, lanePan } from './audioBus';
+import { ambience } from './ambience';
 import { music } from './music';
 import {
   CHARACTERS,
@@ -84,6 +86,7 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
   const stateRef = useRef<GameState>('menu');
   const gestureRef = useRef<GestureController | null>(null);
   const perfRef = useRef<PerfGovernor | null>(null);
+  const audioTickRef = useRef(0);
 
   const [gameState, setGameState] = useState<GameState>('menu');
   const [hud, setHud] = useState<HudData>(initialHud);
@@ -150,6 +153,10 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     setAudioEnabled(settings.sound);
     saveSettings(settings);
     music.setEnabled(settings.music);
+    ambience.setEnabled(settings.sound);
+    buses.setVolume('sfx', settings.sound ? 1 : 0);
+    buses.setVolume('music', settings.music ? 0.55 : 0);
+    buses.setVolume('ambience', settings.sound ? 0.5 : 0);
     if (settings.music && stateRef.current === 'playing') music.start();
     const engine = engineRef.current;
     if (engine) engine.settings = settings;
@@ -171,6 +178,7 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     engine.setAppearance(buildAppearance(profileRef.current));
     engineRef.current = engine;
     rendererRef.current = renderer;
+    setSfxOutput(() => buses.bus('sfx'));
     perfRef.current = new PerfGovernor(
       settings.quality === 'low' ? 'low' : detectInitialTier(),
       settings.quality !== 'low',
@@ -246,6 +254,21 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
         if (!engine.alive) {
           endGame();
         }
+        // Adaptive audio: music builds with speed/combo, ambience tracks biome.
+        audioTickRef.current -= dt;
+        if (audioTickRef.current <= 0) {
+          audioTickRef.current = 0.25;
+          const speed01 = Math.max(0, Math.min(1, (engine.speed - 200) / 340));
+          music.setIntensity(speed01, engine.stats.combo, engine.world.timeOfDay === 'night');
+          ambience.setScene(
+            engine.world.biome,
+            engine.world.timeOfDay,
+            engine.world.weather,
+            engine.world.wind,
+            speed01,
+          );
+        }
+
         if (Math.floor(ts / 100) !== Math.floor((ts - dt * 1000) / 100)) {
           const snap = engine.snapshot();
           setHud({
@@ -273,9 +296,22 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
       // Drain gameplay FX cues into the 3D renderer.
       if (engine.fxEvents.length) {
         for (const ev of engine.fxEvents) {
-          if (ev.kind === 'collect') renderer.onCollect(ev.type, ev.lane, ev.points, ev.combo);
-          else if (ev.kind === 'announce') renderer.announce(ev.text, ev.color);
+          if (ev.kind === 'collect') {
+            renderer.onCollect(ev.type, ev.lane, ev.points, ev.combo);
+            sfxAt(lanePan(ev.lane));
+          } else if (ev.kind === 'announce') {
+            renderer.announce(ev.text, ev.color);
+            buses.duckMusic(0.4, 420);
+          } else if (ev.kind === 'hit') {
+            buses.duckMusic(0.7, 900);
+            music.fadeOut(1.4);
+          } else if (ev.kind === 'shield') {
+            buses.duckMusic(0.5, 500);
+          } else if (ev.kind === 'revive') {
+            music.fadeIn(0.9);
+          }
         }
+        sfxCentre();
         engine.fxEvents.length = 0;
       }
 
@@ -317,6 +353,8 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     reviveUsedRef.current = false;
     sfx.start();
     music.start();
+    music.fadeIn(0.6);
+    ambience.start();
     void requestWakeLock();
     setState('playing');
     lastRef.current = 0;
@@ -326,6 +364,7 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     if (stateRef.current !== 'playing') return;
     sfx.ui();
     music.suspend();
+    ambience.stop();
     void releaseWakeLock();
     setState('paused');
   }, [setState]);
@@ -334,6 +373,7 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     if (stateRef.current !== 'paused') return;
     sfx.ui();
     music.resume();
+    ambience.start();
     void requestWakeLock();
     lastRef.current = 0;
     setState('playing');

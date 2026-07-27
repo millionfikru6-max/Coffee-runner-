@@ -4,7 +4,8 @@
  * with a kebero-style drum pattern — synthesized, no external assets.
  */
 
-import { ensureCtx, getMaster } from './audio';
+import { ensureCtx } from './audio';
+import { buses } from './audioBus';
 
 // Anchihoye-flavored scale (A, Bb, C, E, F) across two octaves
 const SCALE = [220.0, 233.08, 261.63, 329.63, 349.23, 440.0, 466.16, 523.25, 659.25, 698.46];
@@ -29,21 +30,68 @@ class MusicEngine {
   private started = false;
   private gain: GainNode | null = null;
 
+  /**
+   * Adaptive layers. The track is written as a stack: drums+bass always play,
+   * the masinko lead comes in once you're moving, and a high krar counter-
+   * melody plus double-time shaker only appear at high intensity. Intensity
+   * is driven by speed and combo, so the music literally builds as you get
+   * deeper into a run.
+   */
+  private intensity = 0;
+  private targetIntensity = 0;
+  private tempoScale = 1;
+  private targetTempo = 1;
+  private modeMinor = false;
+
   setEnabled(on: boolean) {
     this.enabled = on;
     if (!on) this.stop();
   }
 
+  /**
+   * Drive the arrangement from gameplay.
+   * @param speed01 0..1 run speed
+   * @param combo   current combo count
+   * @param night   night-time swaps the mode to a darker scale
+   */
+  setIntensity(speed01: number, combo: number, night: boolean) {
+    const comboBoost = Math.min(0.35, combo * 0.03);
+    this.targetIntensity = Math.min(1, speed01 * 0.85 + comboBoost);
+    // Tempo creeps up ~12% across a long run; subtle but you feel the pressure.
+    this.targetTempo = 1 + this.targetIntensity * 0.12;
+    this.modeMinor = night;
+  }
+
+  /** Dip the whole track briefly (used on death). */
+  fadeOut(seconds = 1.2) {
+    const ac = ensureCtx();
+    if (!ac || !this.gain) return;
+    const now = ac.currentTime;
+    this.gain.gain.cancelScheduledValues(now);
+    this.gain.gain.setValueAtTime(this.gain.gain.value, now);
+    this.gain.gain.linearRampToValueAtTime(0.0001, now + seconds);
+  }
+
+  /** Restore level after a fadeOut. */
+  fadeIn(seconds = 0.8) {
+    const ac = ensureCtx();
+    if (!ac || !this.gain) return;
+    const now = ac.currentTime;
+    this.gain.gain.cancelScheduledValues(now);
+    this.gain.gain.setValueAtTime(Math.max(0.0001, this.gain.gain.value), now);
+    this.gain.gain.linearRampToValueAtTime(0.16, now + seconds);
+  }
+
   start() {
     if (!this.enabled || this.timer !== null) return;
     const ac = ensureCtx();
-    const master = getMaster();
-    if (!ac || !master) return;
+    const out = buses.bus('music');
+    if (!ac || !out) return;
 
     if (!this.gain) {
       this.gain = ac.createGain();
       this.gain.gain.value = 0.16;
-      this.gain.connect(master);
+      this.gain.connect(out);
     }
     this.started = true;
     this.nextStepTime = ac.currentTime + 0.08;
@@ -72,9 +120,13 @@ class MusicEngine {
     const ac = ensureCtx();
     if (!ac || !this.gain) return;
 
+    // ease toward the target arrangement so changes are never abrupt
+    this.intensity += (this.targetIntensity - this.intensity) * 0.06;
+    this.tempoScale += (this.targetTempo - this.tempoScale) * 0.04;
+
     while (this.nextStepTime < ac.currentTime + 0.14) {
       this.playStep(this.step, this.nextStepTime);
-      this.nextStepTime += STEP;
+      this.nextStepTime += STEP / this.tempoScale;
       this.step = (this.step + 1) % 16;
       if (this.step === 0 && Math.random() < 0.6) {
         this.phrase = (this.phrase + 1) % PHRASES.length;
@@ -86,12 +138,21 @@ class MusicEngine {
     const ac = ensureCtx();
     if (!ac || !this.gain) return;
 
+    const I = this.intensity;
+
     // ---- kebero-style drums ----
     const kickSteps = [0, 3, 4, 10];
     if (kickSteps.includes(step)) this.kick(t);
-    // shaker 8ths, accented
-    this.shaker(t, step % 4 === 2 ? 0.1 : 0.05);
+    // extra kick on the push beat once the run gets going
+    if (I > 0.5 && step === 7) this.kick(t);
+    // shaker 8ths, accented; doubles to 16ths at high intensity
+    this.shaker(t, (step % 4 === 2 ? 0.1 : 0.05) * (0.6 + I * 0.6));
+    if (I > 0.6) this.shaker(t + STEP / this.tempoScale / 2, 0.035 * I);
     if (step === 6 || step === 14) this.rim(t);
+    // kebero fill at the top of every other bar when the pressure is on
+    if (I > 0.7 && step === 15 && Math.random() < 0.5) {
+      for (let i = 0; i < 3; i++) this.rim(t + i * 0.045);
+    }
 
     // ---- bass ----
     if (step === 0 || step === 4 || step === 8 || step === 12) {
@@ -99,11 +160,16 @@ class MusicEngine {
       this.pluck(bassNote, t, 0.22, 'sine', STEP * 3.2);
     }
 
-    // ---- masinko-style lead ----
+    // ---- masinko-style lead (fades in with intensity) ----
     const deg = PHRASES[this.phrase][step];
-    if (deg >= 0) {
-      const f = SCALE[deg];
-      this.pluck(f, t, 0.14, 'triangle', STEP * 1.8);
+    if (deg >= 0 && I > 0.08) {
+      // Night runs drop the third for a darker colour.
+      const f = SCALE[deg] * (this.modeMinor && deg % 5 === 2 ? 0.944 : 1);
+      this.pluck(f, t, 0.14 * Math.min(1, I * 1.6), 'triangle', STEP * 1.8);
+      // high krar counter-melody, only at full tilt
+      if (I > 0.65 && step % 2 === 0) {
+        this.pluck(f * 2, t + STEP * 0.25, 0.05 * I, 'square', STEP * 0.8);
+      }
       // masinko shimmer — slight detuned double stop
       if (Math.random() < 0.35) this.pluck(f * 1.005, t + 0.012, 0.07, 'sawtooth', STEP * 1.2);
       // occasional grace note

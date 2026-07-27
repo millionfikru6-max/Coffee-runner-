@@ -30,6 +30,38 @@ export function setAudioEnabled(on: boolean) {
   enabled = on;
 }
 
+/**
+ * Where the next few sounds should sit in the stereo field, and how much
+ * random pitch variation to apply. Set via `sfx.at()` so repeated pickups
+ * never sound like a machine gun of identical samples.
+ */
+let panHint = 0;
+let detuneHint = 0;
+
+function sfxOut(): AudioNode | null {
+  return busOut() ?? masterGain;
+}
+
+/** Late-bound so audio.ts doesn't hard-depend on audioBus.ts at module load. */
+let busOut: () => AudioNode | null = () => null;
+export function setSfxOutput(fn: () => AudioNode | null) {
+  busOut = fn;
+}
+
+function connectOut(node: AudioNode, pan: number) {
+  const out = sfxOut();
+  if (!out) return;
+  const ac = ctx;
+  if (pan !== 0 && ac && typeof ac.createStereoPanner === 'function') {
+    const p = ac.createStereoPanner();
+    p.pan.value = Math.max(-1, Math.min(1, pan));
+    node.connect(p);
+    p.connect(out);
+  } else {
+    node.connect(out);
+  }
+}
+
 function tone(
   freq: number,
   duration: number,
@@ -46,14 +78,16 @@ function tone(
   const osc = ac.createOscillator();
   const gain = ac.createGain();
   osc.type = type;
-  osc.frequency.setValueAtTime(freq, t0);
+  // A few cents of drift per hit keeps repeated sounds feeling organic.
+  const jitter = 1 + (Math.random() - 0.5) * detuneHint;
+  osc.frequency.setValueAtTime(freq * jitter, t0);
   if (slideTo !== undefined) {
-    osc.frequency.exponentialRampToValueAtTime(Math.max(1, slideTo), t0 + duration);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(1, slideTo * jitter), t0 + duration);
   }
   gain.gain.setValueAtTime(volume, t0);
   gain.gain.exponentialRampToValueAtTime(0.001, t0 + duration);
   osc.connect(gain);
-  gain.connect(masterGain);
+  connectOut(gain, panHint);
   osc.start(t0);
   osc.stop(t0 + duration);
 }
@@ -83,8 +117,24 @@ function noise(duration: number, volume = 0.15, freq = 800, delay = 0, sweepTo?:
   gain.gain.exponentialRampToValueAtTime(0.001, t0 + duration);
   src.connect(filter);
   filter.connect(gain);
-  gain.connect(masterGain);
+  connectOut(gain, panHint);
   src.start(t0);
+}
+
+/**
+ * Position and vary the next sound.
+ * @param pan    -1 (left) … 1 (right)
+ * @param detune fractional pitch spread, e.g. 0.04 = ±2%
+ */
+export function sfxAt(pan: number, detune = 0.04) {
+  panHint = pan;
+  detuneHint = detune;
+}
+
+/** Reset positioning back to centre. */
+export function sfxCentre() {
+  panHint = 0;
+  detuneHint = 0;
 }
 
 export const sfx = {

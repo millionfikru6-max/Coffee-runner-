@@ -208,5 +208,83 @@ console.log('\n== perf governor ==');
   check('ignores spikes without thrashing', changes <= 2, `${changes} changes`);
 }
 
+console.log('\n== audio graph ==');
+{
+  const { installAudioMock } = await import('./audioMock');
+  const log = installAudioMock();
+  const { buses, lanePan, REVERB_PROFILES } = await import('../src/game/audioBus');
+
+  check('bus graph initialises', buses.init());
+  check('sfx bus exists', !!buses.bus('sfx'));
+  check('music bus exists', !!buses.bus('music'));
+  check('ambience bus exists', !!buses.bus('ambience'));
+  check('limiter created', log.created.includes('compressor'));
+  check('convolver reverb created', log.created.includes('convolver'));
+
+  // Music must reach the limiter through the duck node, not directly.
+  const names = new Map<string, string>();
+  const musicNode = buses.bus('music') as unknown as { __name: string };
+  const sfxNode = buses.bus('sfx') as unknown as { __name: string };
+  const hop = (from: string) => log.connections.filter(([a]) => a === from).map(([, b]) => b);
+  const musicTargets = hop(musicNode.__name);
+  check('music routes through one node (duck)', musicTargets.length === 1, musicTargets.join(','));
+  const duckTargets = hop(musicTargets[0]);
+  check('duck reaches limiter', duckTargets.some((t) => t.startsWith('compressor')), duckTargets.join(','));
+  // SFX must feed both the limiter and the reverb send.
+  const sfxTargets = hop(sfxNode.__name);
+  check('sfx feeds limiter and reverb', sfxTargets.length === 2, sfxTargets.join(','));
+  void names;
+
+  for (const b of ['sfx', 'music', 'ambience'] as const) {
+    buses.setVolume(b, 0.5);
+  }
+  check('volumes settable', true);
+
+  for (const biome of Object.keys(REVERB_PROFILES)) {
+    buses.setReverb(biome);
+  }
+  check('all biome reverbs build', true);
+  buses.duckMusic(0.5, 300);
+  check('ducking does not throw', true);
+  check('lanePan spans stereo field', lanePan(0) < 0 && lanePan(1) === 0 && lanePan(2) > 0);
+
+  const { ambience } = await import('../src/game/ambience');
+  ambience.start();
+  const beforeScene = log.created.length;
+  for (const biome of ['coffee_highlands','traditional_village','addis_ababa','simien_mountains','blue_nile'] as const) {
+    for (const tod of ['dawn','day','sunset','night'] as const) {
+      for (const w of ['clear','rain','storm','overcast','golden'] as const) {
+        ambience.setScene(biome, tod, w, 0.5, 0.7);
+      }
+    }
+  }
+  check('ambience handles every biome/time/weather', true, `${log.created.length - beforeScene} nodes`);
+  ambience.stop();
+  check('ambience stops cleanly', true);
+
+  const { music } = await import('../src/game/music');
+  music.setEnabled(true);
+  music.start();
+  for (let i = 0; i < 200; i++) {
+    music.setIntensity(i / 200, i % 30, i % 2 === 0);
+  }
+  music.fadeOut(0.5);
+  music.fadeIn(0.5);
+  music.stop();
+  check('adaptive music runs across full intensity range', true);
+
+  const { sfx, sfxAt, sfxCentre, setSfxOutput } = await import('../src/game/audio');
+  setSfxOutput(() => buses.bus('sfx'));
+  const before = log.created.length;
+  for (const lane of [0, 1, 2]) {
+    sfxAt(lanePan(lane));
+    for (const key of Object.keys(sfx) as (keyof typeof sfx)[]) sfx[key]();
+  }
+  sfxCentre();
+  check('every sfx plays through the bus', log.created.length > before, `${log.created.length - before} nodes`);
+  const pannerCount = log.created.filter((c) => c === 'panner').length;
+  check('panned sfx create panners', pannerCount > 0, `${pannerCount}`);
+}
+
 console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`);
 process.exit(failures === 0 ? 0 : 1);
