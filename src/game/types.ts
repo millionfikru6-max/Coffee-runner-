@@ -187,13 +187,6 @@ export interface WorldState {
   regionLabel: string;
 }
 
-export interface HighScore {
-  name: string;
-  score: number;
-  distance: number;
-  date: string;
-}
-
 export interface GameStats {
   score: number;
   distance: number;
