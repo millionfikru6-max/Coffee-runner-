@@ -54,6 +54,10 @@ export default function App() {
           onRevive={game.onRevive}
           onTutorialDone={game.onTutorialDone}
           onShare={game.onShare}
+          onImportSave={game.onImportSave}
+          onMoveLane={game.onMoveLane}
+          onJump={game.onJump}
+          onSlide={game.onSlide}
         />
       </div>
 

@@ -75,6 +75,8 @@ export class ChaseCamera {
       shakeEngine: number;
       allowShake: boolean;
       portrait: boolean;
+      /** Reduced-motion mode: damp the camera and drop the FOV kick. */
+      calm?: boolean;
     },
   ) {
     this.shake = Math.max(0, this.shake - dt * 2.6);
@@ -133,8 +135,10 @@ export class ChaseCamera {
       lookY = BASE.lookHeight + target.y * 0.5 + (target.sliding ? -0.35 : 0);
       lookZ = target.z - (BASE.lookAhead + speed * 4.5);
 
-      desiredFov = (BASE.fov + speed * 9 + target.pulse * 4) * (target.portrait ? 1.06 : 1);
-      lambda = 7.5;
+      // Reduced motion: hold a steady FOV and follow more gently.
+      const fovKick = target.calm ? speed * 2 : speed * 9 + target.pulse * 4;
+      desiredFov = (BASE.fov + fovKick) * (target.portrait ? 1.06 : 1);
+      lambda = target.calm ? 5 : 7.5;
     }
 
     this.pos.x = THREE.MathUtils.damp(this.pos.x, desiredX, lambda, dt);
@@ -148,7 +152,11 @@ export class ChaseCamera {
     this.fov = THREE.MathUtils.damp(this.fov, desiredFov, 4.5, dt);
 
     // Bank into lane changes.
-    const targetRoll = this.mode === 'play' ? THREE.MathUtils.clamp(-target.laneVel * 0.013, -0.075, 0.075) : 0;
+    const rollScale = target.calm ? 0.3 : 1;
+    const targetRoll =
+      this.mode === 'play'
+        ? THREE.MathUtils.clamp(-target.laneVel * 0.013 * rollScale, -0.075, 0.075)
+        : 0;
     this.roll = THREE.MathUtils.damp(this.roll, targetRoll, 6, dt);
 
     // Combine engine shake with our own impacts.

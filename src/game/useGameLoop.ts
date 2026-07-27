@@ -23,6 +23,7 @@ import {
   purchasePowerUp,
   recordRun,
   resetProgress,
+  importProfile,
   selectCharacter,
   selectOutfit,
   toggleEquip,
@@ -584,6 +585,26 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     sfx.ui();
   }, [applyProfile]);
 
+  /** Restore a profile from a transfer code. Returns false if invalid. */
+  const onImportSave = useCallback(
+    (code: string): boolean => {
+      const next = importProfile(code);
+      if (!next) {
+        sfx.error();
+        return false;
+      }
+      applyProfile(next);
+      sfx.buy();
+      return true;
+    },
+    [applyProfile],
+  );
+
+  /* Direct action bindings for the optional on-screen controls. */
+  const onMoveLane = useCallback((dir: -1 | 1) => engineRef.current?.moveLane(dir), []);
+  const onJump = useCallback(() => engineRef.current?.jump(), []);
+  const onSlide = useCallback(() => engineRef.current?.slide(), []);
+
   const onTutorialDone = useCallback(() => {
     applyProfile(markTutorialDone(profileRef.current));
   }, [applyProfile]);
@@ -662,5 +683,9 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     onRevive,
     onTutorialDone,
     onShare,
+    onImportSave,
+    onMoveLane,
+    onJump,
+    onSlide,
   };
 }

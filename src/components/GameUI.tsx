@@ -15,7 +15,12 @@ import {
   type RunReport,
 } from '../game/progression';
 
-type Panel = null | 'runner' | 'shop' | 'missions' | 'awards' | 'stats';
+import { LeaderboardPanel } from './LeaderboardPanel';
+import { SaveDataPanel } from './SaveDataPanel';
+import { Segmented, Toggle as UIToggle } from './ui';
+import { TouchControls } from './TouchControls';
+
+type Panel = null | 'runner' | 'shop' | 'missions' | 'awards' | 'stats' | 'leaderboard' | 'save';
 
 interface Props {
   gameState: GameState;
@@ -45,6 +50,10 @@ interface Props {
   onRevive: () => void;
   onTutorialDone: () => void;
   onShare: () => Promise<'shared' | 'copied' | 'failed'>;
+  onImportSave: (code: string) => boolean;
+  onMoveLane: (dir: -1 | 1) => void;
+  onJump: () => void;
+  onSlide: () => void;
 }
 
 export function GameUI(props: Props) {
@@ -209,7 +218,8 @@ export function GameUI(props: Props) {
             <NavTile emoji="🏃🏾" label="Runner" onClick={() => setPanel('runner')} />
             <NavTile emoji="🛒" label="Shop" onClick={() => setPanel('shop')} />
             <NavTile emoji="🎯" label="Missions" badge={missionsReady} onClick={() => setPanel('missions')} />
-            <NavTile emoji="🏆" label="Awards" badge={awardsReady} onClick={() => setPanel('awards')} />
+            <NavTile emoji="🎖️" label="Awards" badge={awardsReady} onClick={() => setPanel('awards')} />
+            <NavTile emoji="🏆" label="Ranks" onClick={() => setPanel('leaderboard')} />
             <NavTile emoji="📊" label="Stats" onClick={() => setPanel('stats')} />
             <NavTile emoji="⚙️" label="Settings" onClick={props.onSettings} />
           </div>
@@ -247,6 +257,18 @@ export function GameUI(props: Props) {
       {gameState === 'menu' && panel === 'stats' && (
         <StatsPanel profile={profile} onBack={() => setPanel(null)} />
       )}
+      {gameState === 'menu' && panel === 'leaderboard' && (
+        <LeaderboardPanel profile={profile} onBack={() => setPanel(null)} />
+      )}
+      {panel === 'save' && (
+        <SaveDataPanel
+          profile={profile}
+          onBack={() => setPanel(null)}
+          onImport={props.onImportSave}
+          onReset={props.onResetProgress}
+          onToast={showToast}
+        />
+      )}
 
       {/* --------------------------- Daily modal ---------------------------- */}
       {dailyOpen && gameState === 'menu' && (
@@ -262,64 +284,131 @@ export function GameUI(props: Props) {
 
       {/* ----------------------------- Settings ----------------------------- */}
       {gameState === 'settings' && (
-        <div className="pointer-events-auto flex flex-1 items-center justify-center bg-black/60 p-6 backdrop-blur-sm">
-          <div className="w-full max-w-sm rounded-3xl bg-gradient-to-b from-[#3d2914] to-[#1a1208] p-6 shadow-2xl ring-1 ring-amber-700/40">
-            <h2 className="font-display text-2xl font-bold text-amber-100">Settings</h2>
-            <div className="mt-5 space-y-4">
-              <Toggle label="Sound Effects" value={settings.sound} onChange={(v) => props.onUpdateSettings({ sound: v })} />
-              <Toggle label="Music" value={settings.music} onChange={(v) => props.onUpdateSettings({ music: v })} />
-              <Toggle label="Vibration" value={settings.vibrate} onChange={(v) => props.onUpdateSettings({ vibrate: v })} />
-              <Toggle label="Screen Shake" value={settings.screenShake} onChange={(v) => props.onUpdateSettings({ screenShake: v })} />
-              <div>
-                <div className="mb-2 text-sm text-amber-100/80">Graphics Quality</div>
-                <div className="grid grid-cols-2 gap-2">
-                  {(['high', 'low'] as const).map((q) => (
-                    <button
-                      key={q}
-                      type="button"
-                      onClick={() => props.onUpdateSettings({ quality: q })}
-                      className={`rounded-xl px-2 py-2 text-sm font-semibold capitalize transition ${
-                        settings.quality === q
-                          ? 'bg-amber-500 text-[#1a1208] shadow'
-                          : 'bg-white/10 text-white/80 hover:bg-white/15'
-                      }`}
-                    >
-                      {q === 'high' ? '✨ High' : '⚡ Low (fast)'}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <div className="mb-2 text-sm text-amber-100/80">Difficulty</div>
-                <div className="grid grid-cols-3 gap-2">
-                  {(['easy', 'normal', 'hard'] as const).map((d) => (
-                    <button
-                      key={d}
-                      type="button"
-                      onClick={() => props.onUpdateSettings({ difficulty: d })}
-                      className={`rounded-xl px-2 py-2 text-sm font-semibold capitalize transition ${
-                        settings.difficulty === d
-                          ? 'bg-amber-500 text-[#1a1208] shadow'
-                          : 'bg-white/10 text-white/80 hover:bg-white/15'
-                      }`}
-                    >
-                      {d}
-                    </button>
-                  ))}
-                </div>
-              </div>
+        <div data-ui className="pointer-events-auto absolute inset-0 z-20 flex flex-col bg-[#0d0904]/85 backdrop-blur-md">
+          <div className="anim-fade-up mx-auto flex h-full w-full max-w-md flex-col overflow-hidden bg-gradient-to-b from-[#33210f] to-[#150e06] shadow-2xl sm:my-auto sm:h-auto sm:max-h-[92%] sm:rounded-3xl sm:ring-1 sm:ring-amber-700/30">
+            <div className="flex shrink-0 items-center gap-3 border-b border-amber-900/40 bg-black/25 px-4 pb-3 pt-[max(0.9rem,env(safe-area-inset-top))]">
+              <button
+                type="button"
+                data-ui
+                onClick={props.onMenu}
+                aria-label="Back"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white/10 text-xl text-white ring-1 ring-white/10 transition active:scale-95"
+              >
+                ←
+              </button>
+              <h2 className="font-display flex items-center gap-2 text-xl font-bold text-amber-50">
+                ⚙️ Settings
+              </h2>
             </div>
-            <ResetProgressButton onReset={props.onResetProgress} />
-            <button
-              type="button"
-              onClick={props.onMenu}
-              className="mt-4 w-full rounded-2xl bg-white/10 py-3 font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15 active:scale-[0.98]"
+
+            <div
+              data-ui
+              className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-4"
+              style={{ WebkitOverflowScrolling: 'touch' }}
             >
-              Back
-            </button>
-            <p className="mt-3 text-center text-[10px] text-white/40">
-              Progress saves automatically · Ads are always optional, never forced
-            </p>
+              <section className="space-y-2">
+                <SectionLabel>Audio</SectionLabel>
+                <UIToggle
+                  label="Sound Effects"
+                  hint="Pickups, jumps and impacts"
+                  value={settings.sound}
+                  onChange={(v) => props.onUpdateSettings({ sound: v })}
+                />
+                <UIToggle
+                  label="Music"
+                  hint="Adaptive masinko & kebero score"
+                  value={settings.music}
+                  onChange={(v) => props.onUpdateSettings({ music: v })}
+                />
+              </section>
+
+              <section className="space-y-2">
+                <SectionLabel>Feedback</SectionLabel>
+                <UIToggle
+                  label="Vibration"
+                  hint="Haptic pulse on swipes and hits"
+                  value={settings.vibrate}
+                  onChange={(v) => props.onUpdateSettings({ vibrate: v })}
+                />
+                <UIToggle
+                  label="Screen Shake"
+                  hint="Turn off if motion bothers you"
+                  value={settings.screenShake}
+                  onChange={(v) => props.onUpdateSettings({ screenShake: v })}
+                />
+              </section>
+
+              <section className="space-y-3">
+                <SectionLabel>Performance</SectionLabel>
+                <Segmented
+                  label="Graphics Quality"
+                  hint="Auto-adjusts to hold 60fps"
+                  value={settings.quality}
+                  onChange={(q) => props.onUpdateSettings({ quality: q })}
+                  options={[
+                    { value: 'high', label: '✨ High' },
+                    { value: 'low', label: '⚡ Fast' },
+                  ]}
+                />
+                <Segmented
+                  label="Difficulty"
+                  value={settings.difficulty}
+                  onChange={(d) => props.onUpdateSettings({ difficulty: d })}
+                  options={[
+                    { value: 'easy', label: 'Easy' },
+                    { value: 'normal', label: 'Normal' },
+                    { value: 'hard', label: 'Hard' },
+                  ]}
+                />
+              </section>
+
+              <section className="space-y-2">
+                <SectionLabel>Controls & Accessibility</SectionLabel>
+                <UIToggle
+                  label="On-Screen Buttons"
+                  hint="Show a D-pad as well as swipe gestures"
+                  value={settings.touchButtons}
+                  onChange={(v) => props.onUpdateSettings({ touchButtons: v })}
+                />
+                {settings.touchButtons && (
+                  <UIToggle
+                    label="Left-Handed Layout"
+                    hint="Mirror the on-screen buttons"
+                    value={settings.leftHanded}
+                    onChange={(v) => props.onUpdateSettings({ leftHanded: v })}
+                  />
+                )}
+                <UIToggle
+                  label="Reduced Motion"
+                  hint="Calmer camera, no speed lines or shake"
+                  value={settings.reducedMotion}
+                  onChange={(v) => props.onUpdateSettings({ reducedMotion: v })}
+                />
+              </section>
+
+              <section className="space-y-2">
+                <SectionLabel>Data</SectionLabel>
+                <button
+                  type="button"
+                  data-ui
+                  onClick={() => setPanel('save')}
+                  className="flex w-full items-center justify-between gap-3 rounded-2xl bg-white/[0.06] px-4 py-3 text-left ring-1 ring-white/10 transition active:scale-[0.99]"
+                >
+                  <span>
+                    <span className="block text-sm font-semibold text-amber-50">💾 Save Data</span>
+                    <span className="block text-[11px] text-white/45">
+                      Back up, transfer or reset your progress
+                    </span>
+                  </span>
+                  <span className="text-white/40">›</span>
+                </button>
+              </section>
+
+              <p className="pb-2 text-center text-[10px] leading-relaxed text-white/35">
+                Progress saves automatically · Ads are always optional, never forced
+              </p>
+              <div className="h-[max(0.5rem,env(safe-area-inset-bottom))]" />
+            </div>
           </div>
         </div>
       )}
@@ -357,8 +446,22 @@ export function GameUI(props: Props) {
         />
       )}
 
+      {/* optional on-screen controls */}
+      {gameState === 'playing' && settings.touchButtons && (
+        <TouchControls
+          leftHanded={settings.leftHanded}
+          onLeft={() => props.onMoveLane(-1)}
+          onRight={() => props.onMoveLane(1)}
+          onJump={props.onJump}
+          onSlide={props.onSlide}
+          vibrate={(ms) => {
+            if (settings.vibrate && navigator.vibrate) navigator.vibrate(ms);
+          }}
+        />
+      )}
+
       {/* touch hints */}
-      {gameState === 'playing' && hud.distance < 25 && (
+      {gameState === 'playing' && hud.distance < 25 && !settings.touchButtons && (
         <div className="pointer-events-none absolute bottom-6 left-0 right-0 flex justify-center px-4">
           <div className="rounded-full bg-black/45 px-4 py-2 text-center text-xs text-white/85 backdrop-blur">
             Swipe ← → lanes · ↑ jump · ↓ slide
@@ -405,6 +508,14 @@ export function GameUI(props: Props) {
           }}
         />
       )}
+    </div>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="px-1 text-[10px] font-bold uppercase tracking-[0.18em] text-amber-200/50">
+      {children}
     </div>
   );
 }
@@ -1115,35 +1226,6 @@ function ScoreCountUp({ target }: { target: number }) {
   return <span className="tabular-nums">{val.toLocaleString()}</span>;
 }
 
-function ResetProgressButton({ onReset }: { onReset: () => void }) {
-  const [confirming, setConfirming] = useState(false);
-  useEffect(() => {
-    if (!confirming) return;
-    const t = setTimeout(() => setConfirming(false), 3000);
-    return () => clearTimeout(t);
-  }, [confirming]);
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        if (confirming) {
-          onReset();
-          setConfirming(false);
-        } else {
-          setConfirming(true);
-        }
-      }}
-      className={`mt-6 w-full rounded-2xl py-2.5 text-sm font-semibold ring-1 transition active:scale-[0.98] ${
-        confirming
-          ? 'bg-red-600 text-white ring-red-400/50'
-          : 'bg-white/5 text-red-300/80 ring-red-500/20 hover:bg-red-500/10'
-      }`}
-    >
-      {confirming ? 'Tap again to erase ALL progress' : 'Reset Progress'}
-    </button>
-  );
-}
-
 function RewardedAdModal({
   mode,
   onClose,
@@ -1335,33 +1417,6 @@ function MenuButton({
       }`}
     >
       {children}
-    </button>
-  );
-}
-
-function Toggle({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={() => onChange(!value)}
-      className="flex w-full items-center justify-between rounded-xl bg-white/5 px-3 py-3 ring-1 ring-white/10"
-    >
-      <span className="text-sm font-medium text-amber-50">{label}</span>
-      <span className={`relative h-7 w-12 rounded-full transition ${value ? 'bg-amber-500' : 'bg-white/20'}`}>
-        <span
-          className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition ${
-            value ? 'left-5' : 'left-0.5'
-          }`}
-        />
-      </span>
     </button>
   );
 }

@@ -365,7 +365,8 @@ export class Scene3D {
     this.auras.update(dt, snap.time, snap.effects);
     this.particles.update(dt);
     this.rain.update(dt, world.rainIntensity, world.wind, px, this.runnerZ, world.timeOfDay === 'night');
-    this.speedLines.update(dt, alive ? Math.max(0, speed01 - 0.28) * 1.4 : 0, this.runnerZ);
+    const calm = engine.settings.reducedMotion;
+    this.speedLines.update(dt, calm || !alive ? 0 : Math.max(0, speed01 - 0.28) * 1.4, this.runnerZ);
     this.syncTexts(engine);
     this.texts.update(dt);
     this.sky.lights.playerLight.position.set(px, jumpH + 2.2, this.runnerZ + 0.5);
@@ -381,9 +382,10 @@ export class Scene3D {
       jumping: snap.player.jumping,
       sliding: snap.player.sliding,
       alive,
-      pulse: engine.cameraPulse,
-      shakeEngine: snap.shake,
-      allowShake: engine.settings.screenShake,
+      pulse: calm ? 0 : engine.cameraPulse,
+      shakeEngine: calm ? 0 : snap.shake,
+      allowShake: engine.settings.screenShake && !calm,
+      calm,
       portrait: this.height > this.width * 1.25,
     });
 

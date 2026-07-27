@@ -10,6 +10,9 @@ const DEFAULT_SETTINGS: Settings = {
   difficulty: 'normal',
   quality: 'high',
   screenShake: true,
+  touchButtons: false,
+  leftHanded: false,
+  reducedMotion: false,
 };
 
 export function loadHighScores(): HighScore[] {
