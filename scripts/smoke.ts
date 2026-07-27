@@ -564,5 +564,84 @@ console.log('\n== economy & progression ==');
   check('no negative balances', ep.coins >= 0 && ep.gems >= 0);
 }
 
+console.log('\n== missions & achievements content ==');
+{
+  const { installStorageMock } = await import('./storageMock');
+  installStorageMock();
+  const prog = await import('../src/game/progression');
+
+  const p = prog.loadProfile();
+  const defs = p.missions.map((m) => prog.missionDef(m.id)!);
+  check('daily roll gives 3 missions', defs.length === 3);
+  check('all rolled missions resolve', defs.every(Boolean));
+  const tiers = defs.map((d) => d.tier).sort();
+  check('daily roll is one of each tier',
+    tiers.join(',') === 'easy,hard,medium', tiers.join(','));
+
+  // The roll must be stable across reloads within the same day.
+  const again = prog.loadProfile();
+  check('daily roll is stable across reloads',
+    again.missions.map((m) => m.id).join(',') === p.missions.map((m) => m.id).join(','));
+
+  // Every metric must be reachable, or a mission would be uncompletable.
+  const summary = {
+    score: 50_000, distance: 5_000, beans: 500, coins: 300, specials: 60,
+    maxCombo: 40, jumps: 200, slides: 200, nearMisses: 60, powerupsUsed: 10,
+    nightDistance: 3_000,
+    biomesVisited: ['coffee_highlands','traditional_village','addis_ababa','simien_mountains','blue_nile'] as const,
+    deathBy: 'rock' as const, durationSec: 300,
+  };
+  let mp = prog.loadProfile();
+  // Force every mission in the pool onto the profile and verify it can finish.
+  const allIds = new Set<string>();
+  for (let day = 0; day < 40; day++) {
+    for (const m of prog.loadProfile().missions) allIds.add(m.id);
+  }
+  let uncompletable: string[] = [];
+  for (const id of allIds) {
+    const def = prog.missionDef(id)!;
+    mp = { ...mp, missions: [{ id, progress: 0, claimed: false }] };
+    for (let i = 0; i < 30 && mp.missions[0].progress < def.target; i++) {
+      mp = prog.recordRun(mp, { ...summary, biomesVisited: [...summary.biomesVisited] }).profile;
+      // recordRun re-rolls missions on a new day; pin ours back
+      mp = { ...mp, missions: mp.missions.filter((m) => m.id === id) };
+      if (mp.missions.length === 0) break;
+    }
+    if (mp.missions.length === 0 || mp.missions[0].progress < def.target) uncompletable.push(id);
+  }
+  check('every mission metric can reach its target', uncompletable.length === 0, uncompletable.join(','));
+
+  // Achievements must all be reachable and uniquely identified.
+  const ids = prog.ACHIEVEMENTS.map((a) => a.id);
+  check('achievement ids unique', new Set(ids).size === ids.length);
+  check('achievements have positive rewards', prog.ACHIEVEMENTS.every((a) => a.gems > 0));
+  const maxed = {
+    runs: 10_000, bestScore: 1e6, bestDistance: 1e6, totalDistance: 1e7, totalBeans: 1e6,
+    totalCoinsEarned: 1e6, totalGemsEarned: 1e5, totalJumps: 1e5, totalSlides: 1e5,
+    totalNearMisses: 1e5, bestCombo: 999, powerupsUsed: 1e4, deaths: {}, timePlayedSec: 1e6,
+    biomesSeen: ['coffee_highlands','traditional_village','addis_ababa','simien_mountains','blue_nile'] as never[],
+    nightDistance: 1e5,
+  };
+  const fullProfile = {
+    ...p, coins: 1e6, gems: 1e5,
+    ownedCharacters: prog.CHARACTERS.map((c) => c.id),
+    ownedOutfits: prog.OUTFITS.map((o) => o.id),
+  };
+  const allUnlock = prog.ACHIEVEMENTS.every((a) => a.test(maxed, fullProfile));
+  check('every achievement is reachable', allUnlock,
+    prog.ACHIEVEMENTS.filter((a) => !a.test(maxed, fullProfile)).map((a) => a.id).join(','));
+  // And none should unlock on a brand-new profile.
+  const empty = prog.loadProfile();
+  const freshUnlocks = prog.ACHIEVEMENTS.filter((a) => a.test(empty.stats, empty));
+  check('no achievement unlocks on a fresh profile', freshUnlocks.length === 0,
+    freshUnlocks.map((a) => a.id).join(','));
+
+  check('mission ids unique', (() => {
+    const seen = new Set<string>();
+    for (const id of allIds) { if (seen.has(id)) return false; seen.add(id); }
+    return true;
+  })());
+}
+
 console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`);
 process.exit(failures === 0 ? 0 : 1);

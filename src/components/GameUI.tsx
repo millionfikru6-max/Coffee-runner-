@@ -17,7 +17,7 @@ import {
 
 import { LeaderboardPanel } from './LeaderboardPanel';
 import { SaveDataPanel } from './SaveDataPanel';
-import { Segmented, Toggle as UIToggle } from './ui';
+import { Card, Pill, ProgressBar, Segmented, Sheet, Toggle as UIToggle } from './ui';
 import { TouchControls } from './TouchControls';
 
 type Panel = null | 'runner' | 'shop' | 'missions' | 'awards' | 'stats' | 'leaderboard' | 'save';
@@ -857,53 +857,85 @@ function MissionsPanel({
   onBack: () => void;
   onClaim: (id: string) => void;
 }) {
+  const claimable = profile.missions.filter((m) => {
+    const d = missionDef(m.id);
+    return d && !m.claimed && m.progress >= d.target;
+  }).length;
+  const doneCount = profile.missions.filter((m) => m.claimed).length;
+
+  // Missions reset at local midnight; show how long is left.
+  const msLeft = (() => {
+    const now = new Date();
+    const midnight = new Date(now);
+    midnight.setHours(24, 0, 0, 0);
+    return midnight.getTime() - now.getTime();
+  })();
+  const hrsLeft = Math.floor(msLeft / 3_600_000);
+  const minsLeft = Math.floor((msLeft % 3_600_000) / 60_000);
+
+  const tierMeta: Record<string, { label: string; tone: 'green' | 'gold' | 'red' }> = {
+    easy: { label: 'Easy', tone: 'green' },
+    medium: { label: 'Medium', tone: 'gold' },
+    hard: { label: 'Hard', tone: 'red' },
+  };
+
   return (
-    <PanelShell title="Daily Missions" onBack={onBack}>
-      <p className="mb-3 text-center text-[11px] text-white/50">
-        New missions every day · progress saves between runs
-      </p>
-      <div className="space-y-2">
+    <Sheet
+      title="Daily Missions"
+      subtitle={`Resets in ${hrsLeft}h ${minsLeft}m`}
+      icon="🎯"
+      onBack={onBack}
+      right={<Pill tone={claimable > 0 ? 'green' : 'neutral'}>{doneCount}/3</Pill>}
+    >
+      <div className="space-y-2.5">
         {profile.missions.map((m) => {
           const def = missionDef(m.id);
           if (!def) return null;
-          const pct = Math.min(100, (m.progress / def.target) * 100);
           const ready = m.progress >= def.target && !m.claimed;
+          const tier = tierMeta[def.tier] ?? tierMeta.medium;
           return (
-            <div key={m.id} className="rounded-2xl bg-black/30 p-3 ring-1 ring-white/10">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-sm font-semibold text-white">{def.label}</div>
+            <Card key={m.id} glow={ready}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="mb-1 flex items-center gap-1.5">
+                    <Pill tone={tier.tone}>{tier.label}</Pill>
+                    {def.rewardGems > 0 && <Pill tone="blue">💎 {def.rewardGems}</Pill>}
+                    {def.rewardCoins > 0 && <Pill tone="gold">🪙 {def.rewardCoins}</Pill>}
+                  </div>
+                  <div className="text-sm font-semibold leading-snug text-amber-50">
+                    {def.label}
+                  </div>
+                </div>
                 {m.claimed ? (
-                  <Badge tone="green">✓ Done</Badge>
+                  <Pill tone="green">✓ Claimed</Pill>
                 ) : ready ? (
                   <button
                     type="button"
+                    data-ui
                     onClick={() => onClaim(m.id)}
-                    className="animate-pulse rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 px-3 py-1.5 text-xs font-bold text-white active:scale-95"
+                    className="shrink-0 animate-pulse rounded-xl bg-gradient-to-b from-emerald-400 to-green-600 px-3 py-2 text-xs font-bold text-white shadow-lg ring-1 ring-emerald-300/40 active:scale-95"
                   >
-                    Claim {def.rewardCoins > 0 ? `${def.rewardCoins}🪙` : ''}
-                    {def.rewardGems > 0 ? ` ${def.rewardGems}💎` : ''}
+                    Claim
                   </button>
-                ) : (
-                  <span className="text-xs tabular-nums text-white/50">
-                    {Math.floor(m.progress)}/{def.target}
-                  </span>
-                )}
+                ) : null}
               </div>
-              <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/10">
-                <div
-                  className={`h-full rounded-full transition-all ${
-                    ready || m.claimed
-                      ? 'bg-gradient-to-r from-emerald-400 to-green-500'
-                      : 'bg-gradient-to-r from-amber-500 to-orange-500'
-                  }`}
-                  style={{ width: `${pct}%` }}
+              <div className="mt-2.5">
+                <ProgressBar
+                  value={Math.min(m.progress, def.target)}
+                  max={def.target}
+                  tone={m.claimed || ready ? 'emerald' : 'amber'}
                 />
               </div>
-            </div>
+            </Card>
           );
         })}
       </div>
-    </PanelShell>
+
+      <p className="mt-4 text-center text-[10px] leading-relaxed text-white/35">
+        One easy, one medium and one hard mission every day. Progress carries
+        across runs and saves automatically.
+      </p>
+    </Sheet>
   );
 }
 
