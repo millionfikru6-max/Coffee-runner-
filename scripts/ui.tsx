@@ -183,5 +183,36 @@ check('every button is gesture-safe', () => `${tagged}/${tagged + untagged}`,
   () => untagged === 0);
 console.log(`       ${tagged} buttons audited, ${untagged} missing data-ui`);
 
+// --- tutorial: shown to new players, player-paced, fully labelled ---
+{
+  const tutorialHtml = ui('menu', { ...fresh, tutorialDone: false });
+  check('new players are offered the tutorial', () => tutorialHtml);
+
+}
+
+// --- accessibility audit ---
+{
+  const screens = (['menu', 'playing', 'paused', 'gameover', 'settings'] as const).map((st) =>
+    ui(st, maxed, { touchButtons: true }),
+  );
+  const all = screens.join('');
+
+  // Icon-only buttons must carry an aria-label or a screen reader announces
+  // nothing useful.
+  const iconOnly = (all.match(/<button[^>]*>[\s]*[^<\w\s][\s]*<\/button>/g) ?? []).filter(
+    (b) => !b.includes('aria-label'),
+  );
+  check('icon-only buttons are labelled', () => `${iconOnly.length}`, () => iconOnly.length === 0);
+
+  check('toggles expose switch semantics', () => all,
+    (h) => h.includes('role="switch"') && h.includes('aria-checked'));
+  check('segmented controls expose radio semantics', () => all,
+    (h) => h.includes('role="radiogroup"') && h.includes('role="radio"'));
+  check('on-screen pads are labelled', () => all,
+    (h) => ['Jump','Slide','Move left','Move right'].every((l) => h.includes(`aria-label="${l}"`)));
+  check('safe-area insets are applied', () => all,
+    (h) => h.includes('env(safe-area-inset-bottom)') && h.includes('env(safe-area-inset-top)'));
+}
+
 console.log(`\n${failures === 0 ? 'UI CHECKS PASSED' : `${failures} UI CHECK(S) FAILED`}\n`);
 process.exit(failures === 0 ? 0 : 1);

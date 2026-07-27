@@ -1207,25 +1207,49 @@ const TUTORIAL_STEPS = [
 
 function TutorialOverlay({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState(0);
+  const total = TUTORIAL_STEPS.length;
+  const last = step === total - 1;
+
+  // The original version advanced on a 1.5s timer with no way to pause or go
+  // back, so a first-time player could easily miss a control explanation and
+  // have no way to see it again. Now it's fully player-paced.
+  const next = () => (last ? onDone() : setStep((v) => Math.min(total - 1, v + 1)));
+  const prev = () => setStep((v) => Math.max(0, v - 1));
 
   useEffect(() => {
-    if (step >= TUTORIAL_STEPS.length) {
-      const t = setTimeout(onDone, 250);
-      return () => clearTimeout(t);
-    }
-    const t = setTimeout(() => setStep((s) => s + 1), 1500);
-    return () => clearTimeout(t);
-  }, [step, onDone]);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowRight' || e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        next();
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        prev();
+      } else if (e.key === 'Escape') {
+        onDone();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 
-  const s = TUTORIAL_STEPS[Math.min(step, TUTORIAL_STEPS.length - 1)];
+  const s = TUTORIAL_STEPS[step];
 
   return (
-    <div className="pointer-events-auto fixed inset-0 z-40 flex items-center justify-center bg-black/85 p-6 backdrop-blur-sm">
+    <div
+      data-ui
+      className="pointer-events-auto fixed inset-0 z-40 flex items-center justify-center bg-black/85 p-6 backdrop-blur-sm"
+      role="dialog"
+      aria-label="How to play"
+    >
       <div className="w-full max-w-xs text-center">
         <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-amber-300/70">
-          How to run
+          How to run · {step + 1} of {total}
         </div>
-        <div key={step} className="anim-pop mt-4 rounded-3xl bg-gradient-to-b from-[#3d2914] to-[#1a1208] p-7 ring-1 ring-amber-600/40">
+
+        <div
+          key={step}
+          className="anim-pop mt-4 rounded-3xl bg-gradient-to-b from-[#3d2914] to-[#1a1208] p-7 ring-1 ring-amber-600/40"
+        >
           <div className="flex items-center justify-center gap-4">
             <span className="text-5xl">{s.icon}</span>
             <GestureArrow dir={s.gesture} />
@@ -1236,8 +1260,12 @@ function TutorialOverlay({ onDone }: { onDone: () => void }) {
 
         <div className="mt-5 flex items-center justify-center gap-2">
           {TUTORIAL_STEPS.map((_, i) => (
-            <span
+            <button
+              data-ui
               key={i}
+              type="button"
+              aria-label={`Go to step ${i + 1}`}
+              onClick={() => setStep(i)}
               className={`h-2 rounded-full transition-all ${
                 i === step ? 'w-6 bg-amber-400' : i < step ? 'w-2 bg-amber-500/50' : 'w-2 bg-white/20'
               }`}
@@ -1245,12 +1273,33 @@ function TutorialOverlay({ onDone }: { onDone: () => void }) {
           ))}
         </div>
 
-        <button data-ui
+        <div className="mt-5 flex items-center gap-2">
+          <button
+            data-ui
+            type="button"
+            onClick={prev}
+            disabled={step === 0}
+            className="min-h-[46px] flex-1 rounded-2xl bg-white/10 px-4 text-sm font-semibold text-white/80 ring-1 ring-white/15 transition active:scale-95 disabled:pointer-events-none disabled:opacity-30"
+          >
+            Back
+          </button>
+          <button
+            data-ui
+            type="button"
+            onClick={next}
+            className="font-display min-h-[46px] flex-[1.4] rounded-2xl bg-gradient-to-b from-amber-400 to-amber-600 px-4 text-sm font-bold text-[#2a1a08] shadow-lg transition active:scale-95"
+          >
+            {last ? "Let's run!" : 'Next'}
+          </button>
+        </div>
+
+        <button
+          data-ui
           type="button"
-          onClick={() => setStep(TUTORIAL_STEPS.length)}
-          className="mt-5 rounded-full bg-white/10 px-5 py-2 text-sm font-semibold text-white/80 ring-1 ring-white/15 transition hover:bg-white/15 active:scale-95"
+          onClick={onDone}
+          className="mt-3 px-5 py-2 text-xs font-semibold text-white/45 transition active:scale-95"
         >
-          Skip → Let's run!
+          Skip tutorial
         </button>
       </div>
     </div>
