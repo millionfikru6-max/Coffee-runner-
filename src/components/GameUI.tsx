@@ -15,7 +15,7 @@ import {
   type RunReport,
 } from '../game/progression';
 
-import { LeaderboardPanel } from './LeaderboardPanel';
+import { LeaderboardPanel, tierFor } from './LeaderboardPanel';
 import { SaveDataPanel } from './SaveDataPanel';
 import { Card, Pill, ProgressBar, Segmented, Sheet, Toggle as UIToggle } from './ui';
 import { TouchControls } from './TouchControls';
@@ -147,7 +147,7 @@ export function GameUI(props: Props) {
           </div>
 
           <div className="flex flex-col items-end gap-2">
-            <button
+            <button data-ui
               type="button"
               onClick={props.onPause}
               className="flex h-11 w-11 items-center justify-center rounded-full bg-black/40 text-white shadow-lg ring-1 ring-white/15 backdrop-blur-md transition active:scale-95"
@@ -185,7 +185,7 @@ export function GameUI(props: Props) {
           </div>
 
           <div className="anim-fade-up mx-auto mt-4 w-full max-w-xs" style={{ animationDelay: '90ms' }}>
-            <button
+            <button data-ui
               type="button"
               onClick={handlePlay}
               className="btn-shine w-full rounded-2xl bg-gradient-to-r from-amber-500 via-orange-500 to-red-600 py-4 text-lg font-black tracking-wide text-white shadow-xl shadow-orange-900/50 ring-1 ring-amber-300/40 transition hover:brightness-110 active:scale-[0.97]"
@@ -205,7 +205,7 @@ export function GameUI(props: Props) {
                 const owned = profile.inventory[pw.id] ?? 0;
                 const equipped = profile.equipped.includes(pw.id);
                 return (
-                  <button
+                  <button data-ui
                     key={pw.id}
                     type="button"
                     onClick={() => props.onToggleEquip(pw.id)}
@@ -450,6 +450,7 @@ export function GameUI(props: Props) {
           summary={props.lastSummary}
           report={props.runReport}
           canRevive={props.canRevive}
+          bestScore={profile.stats.bestScore}
           onReviveAd={() => setAdMode('revive')}
           onShare={async () => {
             const res = await props.onShare();
@@ -542,6 +543,7 @@ function GameOverScreen({
   summary,
   report,
   canRevive,
+  bestScore,
   onReviveAd,
   onShare,
   onPlay,
@@ -550,6 +552,7 @@ function GameOverScreen({
   summary: RunSummary;
   report: RunReport | null;
   canRevive: boolean;
+  bestScore: number;
   onReviveAd: () => void;
   onShare: () => void;
   onPlay: () => void;
@@ -558,9 +561,17 @@ function GameOverScreen({
   const region = summary.biomesVisited.length
     ? BIOME_LABELS[summary.biomesVisited[summary.biomesVisited.length - 1]]
     : 'Coffee Highlands';
+  const tier = tierFor(bestScore);
+  const beatBest = report?.newBest;
+  const gapToBest = bestScore - summary.score;
+
   return (
-    <div className="pointer-events-auto flex flex-1 items-center justify-center overflow-y-auto bg-gradient-to-b from-black/50 via-[#2a1008]/70 to-black/80 p-5 backdrop-blur-[2px]">
-      <div className="w-full max-w-sm rounded-3xl bg-gradient-to-b from-[#4a2810] to-[#1a1008] p-6 shadow-2xl ring-1 ring-orange-700/40">
+    <div
+      data-ui
+      className="pointer-events-auto absolute inset-0 z-20 flex flex-col overflow-y-auto overscroll-contain bg-gradient-to-b from-black/55 via-[#2a1008]/75 to-black/85 px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-[max(1.25rem,env(safe-area-inset-top))] backdrop-blur-[2px]"
+      style={{ WebkitOverflowScrolling: 'touch' }}
+    >
+      <div className="anim-fade-up m-auto w-full max-w-sm rounded-3xl bg-gradient-to-b from-[#4a2810] to-[#1a1008] p-6 shadow-2xl ring-1 ring-orange-700/40">
         <div className="text-center">
           <div className="text-4xl">💥</div>
           <h2 className="font-display mt-1 text-3xl font-black text-white">Game Over</h2>
@@ -611,9 +622,27 @@ function GameOverScreen({
           </p>
         )}
 
+        {/* How this run sat against your personal best — the hook for one more go. */}
+        <div className="mt-3 rounded-2xl bg-black/25 p-3 ring-1 ring-white/8">
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <span className="flex items-center gap-1.5 text-white/60">
+              <span aria-hidden>{tier.icon}</span>
+              <span className={tier.color}>{tier.name}</span>
+            </span>
+            <span className="tabular-nums text-white/45">
+              Best {bestScore.toLocaleString()}
+            </span>
+          </div>
+          {!beatBest && gapToBest > 0 && (
+            <p className="mt-1.5 text-center text-[11px] text-amber-200/70">
+              {gapToBest.toLocaleString()} more to beat your best
+            </p>
+          )}
+        </div>
+
         <div className="mt-5 flex flex-col gap-2">
           {canRevive && (
-            <button
+            <button data-ui
               type="button"
               onClick={onReviveAd}
               className="anim-pop w-full rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 py-3.5 text-base font-black text-white shadow-lg shadow-emerald-900/40 ring-1 ring-emerald-300/40 transition hover:brightness-110 active:scale-[0.98]"
@@ -670,7 +699,7 @@ function RunnerPanel({
                 {selected ? (
                   <Badge tone="amber">Selected</Badge>
                 ) : owned ? (
-                  <button
+                  <button data-ui
                     type="button"
                     onClick={() => onSelectCharacter(c.id)}
                     className="w-full rounded-xl bg-white/10 py-1.5 text-xs font-semibold text-white ring-1 ring-white/15 transition hover:bg-white/20 active:scale-95"
@@ -678,7 +707,7 @@ function RunnerPanel({
                     Select
                   </button>
                 ) : (
-                  <button
+                  <button data-ui
                     type="button"
                     onClick={() => onBuyCharacter(c.id)}
                     disabled={!canAfford}
@@ -723,7 +752,7 @@ function RunnerPanel({
               {selected ? (
                 <Badge tone="amber">On</Badge>
               ) : owned ? (
-                <button
+                <button data-ui
                   type="button"
                   onClick={() => onSelectOutfit(o.id)}
                   className="rounded-lg bg-white/10 px-2 py-1 text-[10px] font-semibold text-white ring-1 ring-white/15 active:scale-95"
@@ -731,7 +760,7 @@ function RunnerPanel({
                   Wear
                 </button>
               ) : (
-                <button
+                <button data-ui
                   type="button"
                   onClick={() => onBuyOutfit(o.id)}
                   disabled={!canAfford}
@@ -770,7 +799,7 @@ function ShopPanel({
           <div className="text-sm font-bold text-white">Free Coins</div>
           <div className="text-[11px] text-white/60">Watch a short optional ad · +75 🪙</div>
         </div>
-        <button
+        <button data-ui
           type="button"
           onClick={onFreeCoins}
           className="rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 px-3 py-2 text-xs font-bold text-white shadow transition active:scale-95"
@@ -795,7 +824,7 @@ function ShopPanel({
               </div>
               <div className="text-[11px] text-white/50">{pw.desc}</div>
             </div>
-            <button
+            <button data-ui
               type="button"
               onClick={() => onBuyPowerUp(pw.id)}
               disabled={profile.coins < pw.costCoins}
@@ -816,7 +845,7 @@ function ShopPanel({
       </div>
       <div className="mt-2 grid grid-cols-2 gap-2">
         {CHARACTERS.filter((c) => !profile.ownedCharacters.includes(c.id)).map((c) => (
-          <button
+          <button data-ui
             key={c.id}
             type="button"
             onClick={() => onBuyCharacter(c.id)}
@@ -835,7 +864,7 @@ function ShopPanel({
           </button>
         ))}
         {OUTFITS.filter((o) => !profile.ownedOutfits.includes(o.id)).map((o) => (
-          <button
+          <button data-ui
             key={o.id}
             type="button"
             onClick={() => onBuyOutfit(o.id)}
@@ -991,7 +1020,7 @@ function AwardsPanel({
               {claimed ? (
                 <span className="text-[10px] font-semibold text-emerald-300/70">Claimed</span>
               ) : done ? (
-                <button
+                <button data-ui
                   type="button"
                   onClick={() => onClaim(a.id)}
                   className="animate-pulse rounded-xl bg-gradient-to-r from-yellow-400 to-amber-500 px-3 py-1.5 text-xs font-bold text-[#1a1208] active:scale-95"
@@ -1131,7 +1160,7 @@ function DailyModal({
           <div className="font-display text-xl font-bold text-amber-200">{reward.label}</div>
         </div>
         {ready ? (
-          <button
+          <button data-ui
             type="button"
             onClick={onClaim}
             className="mt-4 w-full rounded-2xl bg-gradient-to-r from-amber-500 via-orange-500 to-red-600 py-3 font-bold text-white shadow-lg transition active:scale-[0.98]"
@@ -1141,7 +1170,7 @@ function DailyModal({
         ) : (
           <p className="mt-4 text-xs text-white/50">Come back tomorrow for the next gift!</p>
         )}
-        <button
+        <button data-ui
           type="button"
           onClick={onClose}
           className="mt-2 w-full rounded-2xl bg-white/10 py-2 text-sm font-semibold text-white/80 ring-1 ring-white/10 transition hover:bg-white/15"
@@ -1216,7 +1245,7 @@ function TutorialOverlay({ onDone }: { onDone: () => void }) {
           ))}
         </div>
 
-        <button
+        <button data-ui
           type="button"
           onClick={() => setStep(TUTORIAL_STEPS.length)}
           className="mt-5 rounded-full bg-white/10 px-5 py-2 text-sm font-semibold text-white/80 ring-1 ring-white/15 transition hover:bg-white/15 active:scale-95"
@@ -1313,7 +1342,7 @@ function RewardedAdModal({
 
         <div className="p-4">
           {done ? (
-            <button
+            <button data-ui
               type="button"
               onClick={onComplete}
               className="anim-pop w-full rounded-2xl bg-gradient-to-r from-emerald-500 to-green-600 py-3 font-black text-white shadow-lg ring-1 ring-emerald-300/40 transition active:scale-[0.98]"
@@ -1321,7 +1350,7 @@ function RewardedAdModal({
               {mode === 'coins' ? 'Claim +75 🪙' : 'Revive & Keep Running'}
             </button>
           ) : (
-            <button
+            <button data-ui
               type="button"
               onClick={onClose}
               className="w-full rounded-2xl bg-white/10 py-3 text-sm font-semibold text-white/70 ring-1 ring-white/10 transition hover:bg-white/15"
@@ -1352,7 +1381,7 @@ function PanelShell({
   return (
     <div className="pointer-events-auto flex flex-1 flex-col overflow-hidden bg-gradient-to-b from-[#1a1208]/80 via-[#241509]/70 to-[#1a1208]/90 backdrop-blur-[2px]">
       <div className="flex items-center gap-3 px-4 pt-[max(1rem,env(safe-area-inset-top))]">
-        <button
+        <button data-ui
           type="button"
           onClick={onBack}
           className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white ring-1 ring-white/15 transition hover:bg-white/20 active:scale-95"
@@ -1379,7 +1408,7 @@ function WalletBar({ profile }: { profile: Profile }) {
 
 function DailyButton({ ready, streak, onClick }: { ready: boolean; streak: number; onClick: () => void }) {
   return (
-    <button
+    <button data-ui
       type="button"
       onClick={onClick}
       className={`relative rounded-full px-3 py-1.5 text-sm font-bold ring-1 backdrop-blur-md transition active:scale-95 ${
@@ -1406,7 +1435,7 @@ function NavTile({
   onClick: () => void;
 }) {
   return (
-    <button
+    <button data-ui
       type="button"
       onClick={onClick}
       className="relative flex flex-col items-center gap-1 rounded-2xl bg-white/10 py-3 ring-1 ring-white/15 transition hover:bg-white/15 active:scale-95"
@@ -1455,7 +1484,7 @@ function MenuButton({
   primary?: boolean;
 }) {
   return (
-    <button
+    <button data-ui
       type="button"
       onClick={onClick}
       className={`w-full rounded-2xl py-3 text-base font-bold tracking-wide transition active:scale-[0.98] ${

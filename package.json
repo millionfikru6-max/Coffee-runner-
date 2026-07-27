@@ -5,17 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && tsx scripts/smoke.ts && tsx scripts/render.ts && vite build",
+    "build": "tsc --noEmit && npm run test && vite build",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
     "smoke": "tsx scripts/smoke.ts",
     "render": "tsx scripts/render.ts",
-    "test": "tsx scripts/smoke.ts && tsx scripts/render.ts"
+    "test": "tsx scripts/smoke.ts && tsx scripts/render.ts && tsx scripts/ui.tsx",
+    "ui": "tsx scripts/ui.tsx"
   },
   "dependencies": {
     "clsx": "2.1.1",
     "react": "19.2.6",
-    "react-dom": "19.2.6",
     "tailwind-merge": "3.4.0",
     "three": "^0.180.0"
   },
@@ -26,6 +26,7 @@
     "@types/react-dom": "19.2.3",
     "@types/three": "^0.180.0",
     "@vitejs/plugin-react": "5.1.1",
+    "react-dom": "^19.2.6",
     "sharp": "^0.35.3",
     "tailwindcss": "4.1.17",
     "tsx": "^4.20.6",
