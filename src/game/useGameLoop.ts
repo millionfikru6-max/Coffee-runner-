@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { GameEngine } from './engine';
-import { Renderer } from './renderer';
+import { Scene3D } from '../game3d/scene3d';
 import type { Appearance, Effects, GameState, RunSummary, Settings } from './types';
 import { loadSettings, saveSettings } from './storage';
 import { setAudioEnabled, sfx } from './audio';
@@ -76,7 +76,7 @@ function buildAppearance(p: Profile): Appearance {
 export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const engineRef = useRef<GameEngine | null>(null);
-  const rendererRef = useRef<Renderer | null>(null);
+  const rendererRef = useRef<Scene3D | null>(null);
   const rafRef = useRef<number>(0);
   const lastRef = useRef<number>(0);
   const stateRef = useRef<GameState>('menu');
@@ -163,7 +163,7 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     const w = Math.max(320, Math.floor(rect.width));
     const h = Math.max(480, Math.floor(rect.height));
     const engine = new GameEngine({ width: w, height: h, settings });
-    const renderer = new Renderer(canvas);
+    const renderer = new Scene3D(canvas, buildAppearance(profileRef.current), settings.quality);
     engine.setAppearance(buildAppearance(profileRef.current));
     engineRef.current = engine;
     rendererRef.current = renderer;
@@ -184,7 +184,9 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
 
   // keep appearance in sync with selections
   useEffect(() => {
-    engineRef.current?.setAppearance(buildAppearance(profile));
+    const a = buildAppearance(profile);
+    engineRef.current?.setAppearance(a);
+    rendererRef.current?.setAppearance(a);
   }, [profile.character, profile.outfit, profile]);
 
   const endGame = useCallback(() => {
@@ -259,7 +261,17 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
         engine.updateMenu(dt * 0.5);
       }
 
-      renderer.render(engine);
+      // Drain gameplay FX cues into the 3D renderer.
+      if (engine.fxEvents.length) {
+        for (const ev of engine.fxEvents) {
+          if (ev.kind === 'collect') renderer.onCollect(ev.type, ev.lane, ev.points, ev.combo);
+          else if (ev.kind === 'announce') renderer.announce(ev.text, ev.color);
+        }
+        engine.fxEvents.length = 0;
+      }
+
+      if (state === 'menu' || state === 'settings') renderer.renderMenu(engine);
+      else renderer.render(engine);
       rafRef.current = requestAnimationFrame(loop);
     },
     [endGame],
@@ -278,6 +290,7 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     const { profile: next, boosters } = consumeEquipped(profileRef.current);
     applyProfile(next);
     engine.reset(settings, boosters, charDef?.perk ?? null, next.stats.bestDistance);
+    rendererRef.current?.resetForRun();
     setHud(initialHud);
     setRunReport(null);
     setLastSummary(null);
