@@ -38,6 +38,14 @@ export const POWERUP_DURATION: Record<PowerUpId, number> = {
   slow: 6,
 };
 
+/** A one-shot visual cue the renderer can react to. */
+export type FxEvent =
+  | { kind: 'collect'; type: CollectibleType; lane: Lane; points: number; combo: number }
+  | { kind: 'announce'; text: string; color: string }
+  | { kind: 'hit' }
+  | { kind: 'shield' }
+  | { kind: 'revive' };
+
 /** How many meters of track are visible ahead (z: 1 → 0) */
 export const VISIBLE_AHEAD_M = 10.5;
 
@@ -144,6 +152,19 @@ export class GameEngine {
   deathBy: ObstacleType | null = null;
   pbDistance = 0;
   pbReached = false;
+
+  /**
+   * Continuous lane position (0..2) including the easing between lanes.
+   * The 3D renderer uses this so the runner slides smoothly instead of
+   * snapping, without changing any collision behaviour.
+   */
+  playerLaneFloat = 1;
+
+  /**
+   * Visual events emitted this frame, drained by the renderer. Keeping this
+   * as a plain queue means gameplay code never needs to know a renderer exists.
+   */
+  fxEvents: FxEvent[] = [];
 
   private laneXs: number[] = [];
   private horizon = 0;
@@ -257,6 +278,8 @@ export class GameEngine {
     this.regionAnnounce = 2.5;
     this.lastBiome = this.world.biome;
     this.deathBy = null;
+    this.playerLaneFloat = 1;
+    this.fxEvents.length = 0;
     this.resetSpeed();
     nextId = 1;
     this.seedIntro();
@@ -517,6 +540,7 @@ export class GameEngine {
       slow: '#b07aff',
     };
     this.floatText(this.player.x, this.player.y - 90, labels[id], colors[id]);
+    if (!fromStart) this.fxEvents.push({ kind: 'announce', text: labels[id], color: colors[id] });
     this.burst(this.player.x, this.player.y - 40, colors[id], 14, 'star');
     this.burst(this.player.x, this.player.y - 40, colors[id], 8, 'glow');
   }
@@ -636,7 +660,7 @@ export class GameEngine {
       this.pbReached = true;
       sfx.fanfare();
       this.cameraPulse = 1;
-      this.floatText(this.width / 2, this.height * 0.3, 'NEW PERSONAL BEST!', '#7CFC00');
+      this.fxEvents.push({ kind: 'announce', text: 'NEW PERSONAL BEST!', color: '#7CFC00' });
       for (let i = 0; i < 16; i++) {
         this.burst(
           this.player.x + (Math.random() - 0.5) * 120,
@@ -652,7 +676,7 @@ export class GameEngine {
       this.lastBiome = this.world.biome;
       this.biomesVisited.add(this.world.biome);
       this.regionAnnounce = 2.8;
-      this.floatText(this.width / 2, this.height * 0.28, this.world.regionLabel, '#FFE4A0');
+      this.fxEvents.push({ kind: 'announce', text: this.world.regionLabel, color: '#FFE4A0' });
       sfx.combo();
       for (let i = 0; i < 12; i++) {
         this.burst(
@@ -677,6 +701,8 @@ export class GameEngine {
     const targetX = this.laneXs[this.player.targetLane];
     this.player.x += (targetX - this.player.x) * Math.min(1, capped * 14);
     this.player.lane = this.player.targetLane;
+    this.playerLaneFloat +=
+      (this.player.targetLane - this.playerLaneFloat) * Math.min(1, capped * 14);
 
     if (this.player.jumping) {
       this.player.vy += 1800 * capped;
@@ -947,6 +973,13 @@ export class GameEngine {
       this.comboTimer = 2.2;
 
       this.collectFx(c, p.x, p.y - 40, points);
+      this.fxEvents.push({
+        kind: 'collect',
+        type: c.type,
+        lane: c.lane,
+        points,
+        combo: this.stats.combo,
+      });
     }
 
     for (const o of this.obstacles) {
@@ -1058,6 +1091,7 @@ export class GameEngine {
     this.shake = 0.4;
     this.cameraPulse = 1;
     sfx.revive();
+    this.fxEvents.push({ kind: 'revive' });
     this.floatText(this.player.x, this.player.y - 100, 'REVIVED!', '#FFD700');
     this.burst(this.player.x, this.player.y - 40, '#FFD700', 20, 'star');
     this.burst(this.player.x, this.player.y - 40, '#fff8dc', 12, 'glow');
@@ -1071,6 +1105,7 @@ export class GameEngine {
       this.shake = 0.5;
       this.cameraPulse = 1;
       sfx.shieldBreak();
+      this.fxEvents.push({ kind: 'shield' });
       this.floatText(this.player.x, this.player.y - 90, 'SHIELD SAVED YOU!', '#5aa8ff');
       this.burst(this.player.x, this.player.y - 30, '#5aa8ff', 18, 'star');
       this.burst(this.player.x, this.player.y - 30, '#bfe0ff', 10, 'glow');
@@ -1082,6 +1117,7 @@ export class GameEngine {
 
     this.deathBy = o.type;
     sfx.hit();
+    this.fxEvents.push({ kind: 'hit' });
     this.shake = 1;
     this.cameraPulse = 1;
     this.burst(this.player.x, this.player.y - 30, '#ff6b4a', 18, 'spark');

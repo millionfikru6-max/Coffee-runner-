@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { GameEngine } from './engine';
-import { Renderer } from './renderer';
+import { Scene3D } from '../game3d/scene3d';
 import type { Appearance, Effects, GameState, RunSummary, Settings } from './types';
 import { loadSettings, saveSettings } from './storage';
-import { setAudioEnabled, sfx } from './audio';
+import { setAudioEnabled, setSfxOutput, sfx, sfxAt, sfxCentre } from './audio';
+import { buses, lanePan } from './audioBus';
+import { ambience } from './ambience';
 import { music } from './music';
 import {
   CHARACTERS,
@@ -21,11 +23,14 @@ import {
   purchasePowerUp,
   recordRun,
   resetProgress,
+  importProfile,
   selectCharacter,
   selectOutfit,
   toggleEquip,
 } from './progression';
 import { shareRun } from './share';
+import { GestureController } from './controls';
+import { PerfGovernor, detectInitialTier } from './perf';
 
 export interface HudData {
   score: number;
@@ -76,11 +81,13 @@ function buildAppearance(p: Profile): Appearance {
 export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const engineRef = useRef<GameEngine | null>(null);
-  const rendererRef = useRef<Renderer | null>(null);
+  const rendererRef = useRef<Scene3D | null>(null);
   const rafRef = useRef<number>(0);
   const lastRef = useRef<number>(0);
   const stateRef = useRef<GameState>('menu');
-  const touchRef = useRef<{ x: number; y: number; t: number } | null>(null);
+  const gestureRef = useRef<GestureController | null>(null);
+  const perfRef = useRef<PerfGovernor | null>(null);
+  const audioTickRef = useRef(0);
 
   const [gameState, setGameState] = useState<GameState>('menu');
   const [hud, setHud] = useState<HudData>(initialHud);
@@ -92,6 +99,7 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
   const [lastSummary, setLastSummary] = useState<RunSummary | null>(null);
   const lastSummaryRef = useRef<RunSummary | null>(null);
   const [canRevive, setCanRevive] = useState(false);
+  const [bootError, setBootError] = useState<string | null>(null);
   const reviveUsedRef = useRef(false);
   const wakeLockRef = useRef<{ release: () => Promise<void> } | null>(null);
 
@@ -147,10 +155,15 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     setAudioEnabled(settings.sound);
     saveSettings(settings);
     music.setEnabled(settings.music);
+    ambience.setEnabled(settings.sound);
+    buses.setVolume('sfx', settings.sound ? 1 : 0);
+    buses.setVolume('music', settings.music ? 0.55 : 0);
+    buses.setVolume('ambience', settings.sound ? 0.5 : 0);
     if (settings.music && stateRef.current === 'playing') music.start();
     const engine = engineRef.current;
     if (engine) engine.settings = settings;
     rendererRef.current?.setQuality(settings.quality);
+    perfRef.current?.setTier(settings.quality, true);
     if (settings.quality === 'low') syncSize();
   }, [settings, syncSize]);
 
@@ -163,10 +176,22 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     const w = Math.max(320, Math.floor(rect.width));
     const h = Math.max(480, Math.floor(rect.height));
     const engine = new GameEngine({ width: w, height: h, settings });
-    const renderer = new Renderer(canvas);
+    let renderer: Scene3D;
+    try {
+      renderer = new Scene3D(canvas, buildAppearance(profileRef.current), settings.quality);
+    } catch (err) {
+      // Surface the failure to the shell rather than leaving a black canvas.
+      setBootError(err instanceof Error ? err.message : 'Renderer failed to start');
+      return;
+    }
     engine.setAppearance(buildAppearance(profileRef.current));
     engineRef.current = engine;
     rendererRef.current = renderer;
+    setSfxOutput(() => buses.bus('sfx'));
+    perfRef.current = new PerfGovernor(
+      settings.quality === 'low' ? 'low' : detectInitialTier(),
+      settings.quality !== 'low',
+    );
     syncSize();
     renderer.render(engine);
 
@@ -184,7 +209,9 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
 
   // keep appearance in sync with selections
   useEffect(() => {
-    engineRef.current?.setAppearance(buildAppearance(profile));
+    const a = buildAppearance(profile);
+    engineRef.current?.setAppearance(a);
+    rendererRef.current?.setAppearance(a);
   }, [profile.character, profile.outfit, profile]);
 
   const endGame = useCallback(() => {
@@ -231,10 +258,26 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
       const state = stateRef.current;
 
       if (state === 'playing') {
+        gestureRef.current?.tick();
         engine.update(dt);
         if (!engine.alive) {
           endGame();
         }
+        // Adaptive audio: music builds with speed/combo, ambience tracks biome.
+        audioTickRef.current -= dt;
+        if (audioTickRef.current <= 0) {
+          audioTickRef.current = 0.25;
+          const speed01 = Math.max(0, Math.min(1, (engine.speed - 200) / 340));
+          music.setIntensity(speed01, engine.stats.combo, engine.world.timeOfDay === 'night');
+          ambience.setScene(
+            engine.world.biome,
+            engine.world.timeOfDay,
+            engine.world.weather,
+            engine.world.wind,
+            speed01,
+          );
+        }
+
         if (Math.floor(ts / 100) !== Math.floor((ts - dt * 1000) / 100)) {
           const snap = engine.snapshot();
           setHud({
@@ -259,17 +302,51 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
         engine.updateMenu(dt * 0.5);
       }
 
-      renderer.render(engine);
+      // Drain gameplay FX cues into the 3D renderer.
+      if (engine.fxEvents.length) {
+        for (const ev of engine.fxEvents) {
+          if (ev.kind === 'collect') {
+            renderer.onCollect(ev.type, ev.lane, ev.points, ev.combo);
+            sfxAt(lanePan(ev.lane));
+          } else if (ev.kind === 'announce') {
+            renderer.announce(ev.text, ev.color);
+            buses.duckMusic(0.4, 420);
+          } else if (ev.kind === 'hit') {
+            buses.duckMusic(0.7, 900);
+            music.fadeOut(1.4);
+          } else if (ev.kind === 'shield') {
+            buses.duckMusic(0.5, 500);
+          } else if (ev.kind === 'revive') {
+            music.fadeIn(0.9);
+          }
+        }
+        sfxCentre();
+        engine.fxEvents.length = 0;
+      }
+
+      if (state === 'menu' || state === 'settings') renderer.renderMenu(engine);
+      else renderer.render(engine);
+
+      // Adaptive quality: measure real frame cost and scale to hold 60fps.
+      const gov = perfRef.current;
+      if (gov && state === 'playing') {
+        const next = gov.sample(dt * 1000);
+        if (next) {
+          renderer.setRenderScale(next.scale);
+          renderer.setQuality(next.tier);
+        }
+      }
       rafRef.current = requestAnimationFrame(loop);
     },
     [endGame],
   );
 
   useEffect(() => {
+    if (bootError) return;
     lastRef.current = 0;
     rafRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [loop]);
+  }, [loop, bootError]);
 
   const startGame = useCallback(() => {
     const engine = engineRef.current;
@@ -278,6 +355,7 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     const { profile: next, boosters } = consumeEquipped(profileRef.current);
     applyProfile(next);
     engine.reset(settings, boosters, charDef?.perk ?? null, next.stats.bestDistance);
+    rendererRef.current?.resetForRun();
     setHud(initialHud);
     setRunReport(null);
     setLastSummary(null);
@@ -285,6 +363,8 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     reviveUsedRef.current = false;
     sfx.start();
     music.start();
+    music.fadeIn(0.6);
+    ambience.start();
     void requestWakeLock();
     setState('playing');
     lastRef.current = 0;
@@ -294,6 +374,7 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     if (stateRef.current !== 'playing') return;
     sfx.ui();
     music.suspend();
+    ambience.stop();
     void releaseWakeLock();
     setState('paused');
   }, [setState]);
@@ -302,6 +383,7 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     if (stateRef.current !== 'paused') return;
     sfx.ui();
     music.resume();
+    ambience.start();
     void requestWakeLock();
     lastRef.current = 0;
     setState('playing');
@@ -486,50 +568,20 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-
-    const onStart = (e: PointerEvent) => {
-      touchRef.current = { x: e.clientX, y: e.clientY, t: performance.now() };
-    };
-
-    const onEnd = (e: PointerEvent) => {
-      const start = touchRef.current;
-      touchRef.current = null;
-      if (!start) return;
-      if (stateRef.current !== 'playing') return;
-
-      const dx = e.clientX - start.x;
-      const dy = e.clientY - start.y;
-      const adx = Math.abs(dx);
-      const ady = Math.abs(dy);
-      const dt = performance.now() - start.t;
-      if (dt > 600) return;
-      const min = 28;
-
-      const engine = engineRef.current;
-      if (!engine) return;
-
-      if (adx < min && ady < min) {
-        engine.jump();
-        return;
-      }
-
-      if (adx > ady) {
-        if (dx > 0) engine.moveLane(1);
-        else engine.moveLane(-1);
-      } else {
-        if (dy < 0) engine.jump();
-        else engine.slide();
-      }
-    };
-
-    el.addEventListener('pointerdown', onStart);
-    el.addEventListener('pointerup', onEnd);
-    el.addEventListener('pointercancel', () => {
-      touchRef.current = null;
+    const ctrl = new GestureController(el, {
+      moveLane: (d) => engineRef.current?.moveLane(d),
+      jump: () => engineRef.current?.jump(),
+      slide: () => engineRef.current?.slide(),
+      isPlaying: () => stateRef.current === 'playing',
+      isAirborne: () => !!engineRef.current?.player.jumping,
+      vibrate: (ms) => {
+        if (settingsRef.current.vibrate && navigator.vibrate) navigator.vibrate(ms);
+      },
     });
+    gestureRef.current = ctrl;
     return () => {
-      el.removeEventListener('pointerdown', onStart);
-      el.removeEventListener('pointerup', onEnd);
+      ctrl.dispose();
+      gestureRef.current = null;
     };
   }, [containerRef]);
 
@@ -541,6 +593,26 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     applyProfile(resetProgress());
     sfx.ui();
   }, [applyProfile]);
+
+  /** Restore a profile from a transfer code. Returns false if invalid. */
+  const onImportSave = useCallback(
+    (code: string): boolean => {
+      const next = importProfile(code);
+      if (!next) {
+        sfx.error();
+        return false;
+      }
+      applyProfile(next);
+      sfx.buy();
+      return true;
+    },
+    [applyProfile],
+  );
+
+  /* Direct action bindings for the optional on-screen controls. */
+  const onMoveLane = useCallback((dir: -1 | 1) => engineRef.current?.moveLane(dir), []);
+  const onJump = useCallback(() => engineRef.current?.jump(), []);
+  const onSlide = useCallback(() => engineRef.current?.slide(), []);
 
   const onTutorialDone = useCallback(() => {
     applyProfile(markTutorialDone(profileRef.current));
@@ -600,6 +672,7 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     runReport,
     lastSummary,
     canRevive,
+    bootError,
     startGame,
     pauseGame,
     resumeGame,
@@ -620,5 +693,9 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     onRevive,
     onTutorialDone,
     onShare,
+    onImportSave,
+    onMoveLane,
+    onJump,
+    onSlide,
   };
 }

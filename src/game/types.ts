@@ -187,13 +187,6 @@ export interface WorldState {
   regionLabel: string;
 }
 
-export interface HighScore {
-  name: string;
-  score: number;
-  distance: number;
-  date: string;
-}
-
 export interface GameStats {
   score: number;
   distance: number;
@@ -211,6 +204,12 @@ export interface Settings {
   difficulty: 'easy' | 'normal' | 'hard';
   quality: 'high' | 'low';
   screenShake: boolean;
+  /** Show on-screen D-pad buttons in addition to swipe gestures. */
+  touchButtons: boolean;
+  /** Mirror the on-screen buttons for left-handed play. */
+  leftHanded: boolean;
+  /** Reduce non-essential motion (parallax, shake, speed lines). */
+  reducedMotion: boolean;
 }
 
 /** Summary of a finished run, fed into progression systems */

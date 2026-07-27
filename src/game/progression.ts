@@ -6,7 +6,7 @@ import type {
   RunSummary,
 } from './types';
 
-const PROFILE_KEY = 'coffee-runner-profile-v2';
+import { SaveStore } from './save';
 
 /* ---------------------------------- defs ---------------------------------- */
 
@@ -172,7 +172,13 @@ export type MissionMetric =
   | 'near_miss'
   | 'coins'
   | 'powerups'
-  | 'distance_single';
+  | 'distance_single'
+  | 'slides'
+  | 'specials'
+  | 'combo'
+  | 'night_distance'
+  | 'biomes'
+  | 'runs';
 
 export interface MissionDef {
   id: string;
@@ -181,17 +187,43 @@ export interface MissionDef {
   target: number;
   rewardCoins: number;
   rewardGems: number;
+  tier: MissionTier;
 }
 
+/**
+ * Daily mission pool.
+ *
+ * Missions are tagged easy/medium/hard and the daily roll takes one of each,
+ * so a day always has a quick win, a solid goal and something to chase. That
+ * beats the old pool, which could roll three hard objectives and feel
+ * impossible, or three trivial ones and feel pointless.
+ */
+export type MissionTier = 'easy' | 'medium' | 'hard';
+
 const MISSION_POOL: MissionDef[] = [
-  { id: 'dist_500', label: 'Run 500m in total', metric: 'distance', target: 500, rewardCoins: 100, rewardGems: 0 },
-  { id: 'beans_60', label: 'Collect 60 coffee beans', metric: 'beans', target: 60, rewardCoins: 80, rewardGems: 0 },
-  { id: 'score_4k', label: 'Reach 4,000 score', metric: 'score', target: 4000, rewardCoins: 120, rewardGems: 0 },
-  { id: 'jumps_40', label: 'Jump 40 times', metric: 'jumps', target: 40, rewardCoins: 60, rewardGems: 0 },
-  { id: 'miss_8', label: '8 near misses', metric: 'near_miss', target: 8, rewardCoins: 90, rewardGems: 1 },
-  { id: 'coins_20', label: 'Grab 20 coins', metric: 'coins', target: 20, rewardCoins: 70, rewardGems: 0 },
-  { id: 'pows_2', label: 'Use 2 power-ups', metric: 'powerups', target: 2, rewardCoins: 0, rewardGems: 1 },
-  { id: 'single_250', label: '250m in a single run', metric: 'distance_single', target: 250, rewardCoins: 0, rewardGems: 1 },
+  // ---- easy: finishable in a run or two ----
+  { id: 'dist_500', label: 'Run 500m in total', metric: 'distance', target: 500, rewardCoins: 100, rewardGems: 0, tier: 'easy' },
+  { id: 'beans_60', label: 'Collect 60 coffee beans', metric: 'beans', target: 60, rewardCoins: 80, rewardGems: 0, tier: 'easy' },
+  { id: 'jumps_40', label: 'Jump 40 times', metric: 'jumps', target: 40, rewardCoins: 60, rewardGems: 0, tier: 'easy' },
+  { id: 'coins_20', label: 'Grab 20 coins', metric: 'coins', target: 20, rewardCoins: 70, rewardGems: 0, tier: 'easy' },
+  { id: 'slides_25', label: 'Slide 25 times', metric: 'slides', target: 25, rewardCoins: 65, rewardGems: 0, tier: 'easy' },
+  { id: 'runs_3', label: 'Finish 3 runs', metric: 'runs', target: 3, rewardCoins: 75, rewardGems: 0, tier: 'easy' },
+
+  // ---- medium: a session's worth of play ----
+  { id: 'score_4k', label: 'Reach 4,000 score', metric: 'score', target: 4000, rewardCoins: 120, rewardGems: 0, tier: 'medium' },
+  { id: 'miss_8', label: 'Squeeze past 8 obstacles', metric: 'near_miss', target: 8, rewardCoins: 90, rewardGems: 1, tier: 'medium' },
+  { id: 'pows_2', label: 'Use 2 power-ups', metric: 'powerups', target: 2, rewardCoins: 60, rewardGems: 1, tier: 'medium' },
+  { id: 'specials_12', label: 'Collect 12 rare treasures', metric: 'specials', target: 12, rewardCoins: 110, rewardGems: 0, tier: 'medium' },
+  { id: 'dist_1500', label: 'Run 1,500m in total', metric: 'distance', target: 1500, rewardCoins: 150, rewardGems: 0, tier: 'medium' },
+  { id: 'combo_10', label: 'Chain a 10x combo', metric: 'combo', target: 10, rewardCoins: 100, rewardGems: 1, tier: 'medium' },
+
+  // ---- hard: worth a gem, needs a good run ----
+  { id: 'single_250', label: 'Reach 250m in one run', metric: 'distance_single', target: 250, rewardCoins: 80, rewardGems: 1, tier: 'hard' },
+  { id: 'single_600', label: 'Reach 600m in one run', metric: 'distance_single', target: 600, rewardCoins: 200, rewardGems: 2, tier: 'hard' },
+  { id: 'night_300', label: 'Run 300m after dark', metric: 'night_distance', target: 300, rewardCoins: 160, rewardGems: 1, tier: 'hard' },
+  { id: 'biomes_3', label: 'Visit 3 regions in one run', metric: 'biomes', target: 3, rewardCoins: 180, rewardGems: 1, tier: 'hard' },
+  { id: 'combo_20', label: 'Chain a 20x combo', metric: 'combo', target: 20, rewardCoins: 220, rewardGems: 2, tier: 'hard' },
+  { id: 'score_12k', label: 'Reach 12,000 score', metric: 'score', target: 12000, rewardCoins: 250, rewardGems: 2, tier: 'hard' },
 ];
 
 export interface MissionState {
@@ -223,6 +255,18 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   { id: 'pow_10', name: 'Power Broker', desc: 'Use 10 power-ups', gems: 3, test: (s) => s.powerupsUsed >= 10 },
   { id: 'miss_50', name: 'Thread the Needle', desc: '50 near misses lifetime', gems: 3, test: (s) => s.totalNearMisses >= 50 },
   { id: 'rich', name: 'Buna Tycoon', desc: 'Hold 2,000 coins at once', gems: 2, test: (_s, p) => p.coins >= 2000 },
+  { id: 'dist_50k', name: 'Great Rift Runner', desc: 'Run 50,000m lifetime', gems: 15, test: (s) => s.totalDistance >= 50000 },
+  { id: 'score_25k', name: 'Legend of the Highlands', desc: 'Score 25,000 in one run', gems: 12, test: (s) => s.bestScore >= 25000 },
+  { id: 'runs_50', name: 'Devoted', desc: 'Finish 50 runs', gems: 5, test: (s) => s.runs >= 50 },
+  { id: 'runs_200', name: 'Unstoppable', desc: 'Finish 200 runs', gems: 12, test: (s) => s.runs >= 200 },
+  { id: 'combo_30', name: 'Perfect Flow', desc: 'Hit a 30x combo', gems: 8, test: (s) => s.bestCombo >= 30 },
+  { id: 'beans_5k', name: 'Buna Master', desc: 'Collect 5,000 beans lifetime', gems: 10, test: (s) => s.totalBeans >= 5000 },
+  { id: 'jumps_1k', name: 'Sky Walker', desc: 'Jump 1,000 times', gems: 6, test: (s) => s.totalJumps >= 1000 },
+  { id: 'slides_500', name: 'Low Rider', desc: 'Slide 500 times', gems: 5, test: (s) => s.totalSlides >= 500 },
+  { id: 'night_2k', name: 'Child of the Moon', desc: 'Run 2,000m at night', gems: 8, test: (s) => s.nightDistance >= 2000 },
+  { id: 'wardrobe', name: 'Full Wardrobe', desc: 'Own every character and outfit', gems: 20,
+    test: (_s, p) => p.ownedCharacters.length >= CHARACTERS.length && p.ownedOutfits.length >= OUTFITS.length },
+  { id: 'hour', name: 'One More Run', desc: 'Play for a total of one hour', gems: 6, test: (s) => s.timePlayedSec >= 3600 },
 ];
 
 /* ------------------------------ daily rewards ------------------------------ */
@@ -342,22 +386,39 @@ function defaultProfile(): Profile {
   return rollMissions(p);
 }
 
+/**
+ * Roll the day's missions: one easy, one medium, one hard.
+ *
+ * The choice is seeded from the date, so the set is stable if the profile is
+ * reloaded during the day and can't be re-rolled by refreshing the page.
+ */
 function rollMissions(p: Profile): Profile {
   const today = todayKey();
   if (p.missionDay === today && p.missions.length === 3) return p;
-  const pool = [...MISSION_POOL].sort(() => Math.random() - 0.5).slice(0, 3);
+
+  let seed = 0;
+  for (let i = 0; i < today.length; i++) seed = (seed * 31 + today.charCodeAt(i)) >>> 0;
+  const pick = (tier: MissionTier, salt: number) => {
+    const pool = MISSION_POOL.filter((m) => m.tier === tier);
+    return pool[(seed + salt * 7919) % pool.length];
+  };
+
+  const chosen = [pick('easy', 1), pick('medium', 2), pick('hard', 3)];
   return {
     ...p,
     missionDay: today,
-    missions: pool.map((m) => ({ id: m.id, progress: 0, claimed: false })),
+    missions: chosen.map((m) => ({ id: m.id, progress: 0, claimed: false })),
   };
 }
 
 /* -------------------------------- persistence ------------------------------ */
 
 export function resetProgress(): Profile {
+  store.clear();
   const p = defaultProfile();
-  saveProfile(p);
+  cached = p;
+  store.save(p);
+  store.flush();
   return p;
 }
 
@@ -367,36 +428,170 @@ export function markTutorialDone(p: Profile): Profile {
   return next;
 }
 
-export function loadProfile(): Profile {
-  let p: Profile;
-  try {
-    const raw = localStorage.getItem(PROFILE_KEY);
-    if (!raw) {
-      p = defaultProfile();
-    } else {
-      const parsed = JSON.parse(raw) as Profile;
-      p = {
-        ...defaultProfile(),
-        ...parsed,
-        inventory: { ...emptyInventory(), ...parsed.inventory },
-        stats: { ...defaultProfile().stats, ...parsed.stats },
-        daily: { ...defaultProfile().daily, ...parsed.daily },
-      };
+/**
+ * Repair a loaded profile: fill anything missing, drop references to content
+ * that no longer exists, and clamp values that a corrupt save (or a tampered
+ * one) could otherwise use to break the economy.
+ */
+function normaliseProfile(raw: Record<string, unknown>, defaults: Profile): Profile {
+  const r = raw as Partial<Profile>;
+  const clampNum = (v: unknown, min: number, max: number, fallback: number) =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.max(min, Math.min(max, Math.floor(v))) : fallback;
+
+  const ownedCharacters = Array.isArray(r.ownedCharacters)
+    ? r.ownedCharacters.filter((id) => CHARACTERS.some((c) => c.id === id))
+    : [...defaults.ownedCharacters];
+  if (!ownedCharacters.includes('abebe')) ownedCharacters.push('abebe');
+
+  const ownedOutfits = Array.isArray(r.ownedOutfits)
+    ? r.ownedOutfits.filter((id) => OUTFITS.some((o) => o.id === id))
+    : [...defaults.ownedOutfits];
+  if (!ownedOutfits.includes('shamma')) ownedOutfits.push('shamma');
+
+  // Never leave the player equipped to something they don't own.
+  const character = ownedCharacters.includes(r.character as string)
+    ? (r.character as string)
+    : 'abebe';
+  const outfit = ownedOutfits.includes(r.outfit as string) ? (r.outfit as string) : 'shamma';
+
+  const inventory = { ...emptyInventory() };
+  if (r.inventory && typeof r.inventory === 'object') {
+    for (const k of Object.keys(inventory) as PowerUpId[]) {
+      inventory[k] = clampNum((r.inventory as Record<string, unknown>)[k], 0, 99, 0);
     }
-  } catch {
-    p = defaultProfile();
   }
+
+  const equipped = Array.isArray(r.equipped)
+    ? (r.equipped.filter((id) => id in inventory && inventory[id as PowerUpId] > 0) as PowerUpId[]).slice(0, 3)
+    : [];
+
+  const missions = Array.isArray(r.missions)
+    ? r.missions
+        .filter((m) => m && typeof m.id === 'string' && missionDef(m.id))
+        .map((m) => ({
+          id: m.id,
+          progress: clampNum(m.progress, 0, 1e9, 0),
+          claimed: !!m.claimed,
+        }))
+    : [];
+
+  const leaderboard = Array.isArray(r.leaderboard)
+    ? r.leaderboard
+        .filter((e) => e && typeof e.score === 'number' && Number.isFinite(e.score))
+        .map((e) => ({
+          name: String(e.name ?? 'Runner').slice(0, 24),
+          emoji: String(e.emoji ?? '🏃').slice(0, 8),
+          score: clampNum(e.score, 0, 1e12, 0),
+          distance: clampNum(e.distance, 0, 1e9, 0),
+          biome: String(e.biome ?? 'highlands').slice(0, 40),
+          date: typeof e.date === 'string' ? e.date : new Date().toISOString(),
+        }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 10)
+    : [];
+
+  const stats: LifetimeStats = {
+    ...defaults.stats,
+    ...(r.stats && typeof r.stats === 'object' ? r.stats : {}),
+    deaths: { ...((r.stats as LifetimeStats | undefined)?.deaths ?? {}) },
+    biomesSeen: Array.isArray((r.stats as LifetimeStats | undefined)?.biomesSeen)
+      ? ((r.stats as LifetimeStats).biomesSeen as Biome[]).filter((b) =>
+          ['coffee_highlands', 'traditional_village', 'addis_ababa', 'simien_mountains', 'blue_nile'].includes(b),
+        )
+      : [],
+  };
+
+  return {
+    ...defaults,
+    version: SAVE_PROFILE_VERSION,
+    coins: clampNum(r.coins, 0, 1e9, defaults.coins),
+    gems: clampNum(r.gems, 0, 1e6, defaults.gems),
+    character,
+    outfit,
+    ownedCharacters,
+    ownedOutfits,
+    inventory,
+    equipped,
+    missions,
+    missionDay: typeof r.missionDay === 'string' ? r.missionDay : '',
+    achievements:
+      r.achievements && typeof r.achievements === 'object'
+        ? (r.achievements as Record<string, boolean>)
+        : {},
+    daily: {
+      lastClaim: typeof r.daily?.lastClaim === 'string' ? r.daily.lastClaim : null,
+      streak: clampNum(r.daily?.streak, 0, 3650, 0),
+    },
+    leaderboard,
+    stats,
+    tutorialDone: !!r.tutorialDone,
+  };
+}
+
+const SAVE_PROFILE_VERSION = 3;
+
+const store = new SaveStore<Profile>({
+  defaults: defaultProfile,
+  normalise: normaliseProfile,
+  migrations: {
+    // v2 (original build) → v3: leaderboard entries gained a biome label and
+    // the inventory gained the 'slow' power-up.
+    2: (d) => {
+      const p = d as Partial<Profile>;
+      return {
+        ...p,
+        inventory: { magnet: 0, shield: 0, double: 0, superJump: 0, slow: 0, ...(p.inventory ?? {}) },
+        leaderboard: (p.leaderboard ?? []).map((e) => ({
+          ...e,
+          biome: e.biome ?? 'highlands',
+          emoji: e.emoji ?? '🏃',
+        })),
+        version: 3,
+      };
+    },
+  },
+});
+
+let cached: Profile | null = null;
+
+export function loadProfile(): Profile {
+  const result = store.load();
+  let p = result.data;
   p = rollMissions(p);
-  saveProfile(p);
+  cached = p;
+  store.save(p);
   return p;
 }
 
 export function saveProfile(p: Profile): void {
-  try {
-    localStorage.setItem(PROFILE_KEY, JSON.stringify(p));
-  } catch {
-    /* storage full / unavailable — game still playable */
-  }
+  cached = p;
+  store.save(p);
+}
+
+/** Force any queued write to disk right now. */
+export function flushProfile(): void {
+  store.flush();
+}
+
+/** Portable save code for moving between devices. */
+export function exportProfile(p: Profile): string {
+  return store.export(p);
+}
+
+/** Returns null when the code is malformed or fails its checksum. */
+export function importProfile(code: string): Profile | null {
+  const p = store.import(code);
+  if (!p) return null;
+  const rolled = rollMissions(p);
+  cached = rolled;
+  store.save(rolled);
+  store.flush();
+  return rolled;
+}
+
+/** Last profile handed out by load/save, for callers that need it cheaply. */
+export function currentProfile(): Profile | null {
+  return cached;
 }
 
 /* --------------------------------- actions --------------------------------- */
@@ -572,6 +767,19 @@ function metricDelta(metric: MissionMetric, r: RunSummary, state: MissionState):
       return r.powerupsUsed;
     case 'distance_single':
       return Math.max(0, r.distance - state.progress);
+    case 'slides':
+      return r.slides;
+    case 'specials':
+      return r.specials;
+    case 'combo':
+      // "best combo" style goals track a high-water mark, not a sum.
+      return Math.max(0, r.maxCombo - state.progress);
+    case 'night_distance':
+      return r.nightDistance;
+    case 'biomes':
+      return Math.max(0, r.biomesVisited.length - state.progress);
+    case 'runs':
+      return 1;
   }
 }
 

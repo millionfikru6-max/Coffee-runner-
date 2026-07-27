@@ -15,7 +15,12 @@ import {
   type RunReport,
 } from '../game/progression';
 
-type Panel = null | 'runner' | 'shop' | 'missions' | 'awards' | 'stats';
+import { LeaderboardPanel, tierFor } from './LeaderboardPanel';
+import { SaveDataPanel } from './SaveDataPanel';
+import { Card, Pill, ProgressBar, Segmented, Sheet, Toggle as UIToggle } from './ui';
+import { TouchControls } from './TouchControls';
+
+type Panel = null | 'runner' | 'shop' | 'missions' | 'awards' | 'stats' | 'leaderboard' | 'save';
 
 interface Props {
   gameState: GameState;
@@ -45,6 +50,10 @@ interface Props {
   onRevive: () => void;
   onTutorialDone: () => void;
   onShare: () => Promise<'shared' | 'copied' | 'failed'>;
+  onImportSave: (code: string) => boolean;
+  onMoveLane: (dir: -1 | 1) => void;
+  onJump: () => void;
+  onSlide: () => void;
 }
 
 export function GameUI(props: Props) {
@@ -54,6 +63,22 @@ export function GameUI(props: Props) {
   const [adMode, setAdMode] = useState<null | 'coins' | 'revive'>(null);
   const [toast, setToast] = useState<{ msg: string; key: number } | null>(null);
   const [tutorialOpen, setTutorialOpen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => {});
+    } else {
+      // Not supported on iOS Safari; failing quietly is the right call.
+      void document.documentElement.requestFullscreen?.().catch(() => {});
+    }
+  };
 
   const handlePlay = () => {
     if (!profile.tutorialDone) {
@@ -122,7 +147,7 @@ export function GameUI(props: Props) {
           </div>
 
           <div className="flex flex-col items-end gap-2">
-            <button
+            <button data-ui
               type="button"
               onClick={props.onPause}
               className="flex h-11 w-11 items-center justify-center rounded-full bg-black/40 text-white shadow-lg ring-1 ring-white/15 backdrop-blur-md transition active:scale-95"
@@ -160,7 +185,7 @@ export function GameUI(props: Props) {
           </div>
 
           <div className="anim-fade-up mx-auto mt-4 w-full max-w-xs" style={{ animationDelay: '90ms' }}>
-            <button
+            <button data-ui
               type="button"
               onClick={handlePlay}
               className="btn-shine w-full rounded-2xl bg-gradient-to-r from-amber-500 via-orange-500 to-red-600 py-4 text-lg font-black tracking-wide text-white shadow-xl shadow-orange-900/50 ring-1 ring-amber-300/40 transition hover:brightness-110 active:scale-[0.97]"
@@ -180,7 +205,7 @@ export function GameUI(props: Props) {
                 const owned = profile.inventory[pw.id] ?? 0;
                 const equipped = profile.equipped.includes(pw.id);
                 return (
-                  <button
+                  <button data-ui
                     key={pw.id}
                     type="button"
                     onClick={() => props.onToggleEquip(pw.id)}
@@ -209,19 +234,20 @@ export function GameUI(props: Props) {
             <NavTile emoji="🏃🏾" label="Runner" onClick={() => setPanel('runner')} />
             <NavTile emoji="🛒" label="Shop" onClick={() => setPanel('shop')} />
             <NavTile emoji="🎯" label="Missions" badge={missionsReady} onClick={() => setPanel('missions')} />
-            <NavTile emoji="🏆" label="Awards" badge={awardsReady} onClick={() => setPanel('awards')} />
+            <NavTile emoji="🎖️" label="Awards" badge={awardsReady} onClick={() => setPanel('awards')} />
+            <NavTile emoji="🏆" label="Ranks" onClick={() => setPanel('leaderboard')} />
             <NavTile emoji="📊" label="Stats" onClick={() => setPanel('stats')} />
             <NavTile emoji="⚙️" label="Settings" onClick={props.onSettings} />
           </div>
 
+          {/*
+            window.close() only works for script-opened windows, so the old
+            "Exit" button did nothing in a normal tab. Offer fullscreen
+            instead, which is what players actually want on a phone.
+          */}
           <div className="mx-auto mt-4 flex w-full max-w-xs flex-col gap-2">
-            <MenuButton
-              onClick={() => {
-                if (document.fullscreenElement) void document.exitFullscreen();
-                window.close();
-              }}
-            >
-              Exit
+            <MenuButton onClick={toggleFullscreen}>
+              {isFullscreen ? '🗗 Exit Fullscreen' : '⛶ Play Fullscreen'}
             </MenuButton>
           </div>
 
@@ -247,6 +273,18 @@ export function GameUI(props: Props) {
       {gameState === 'menu' && panel === 'stats' && (
         <StatsPanel profile={profile} onBack={() => setPanel(null)} />
       )}
+      {gameState === 'menu' && panel === 'leaderboard' && (
+        <LeaderboardPanel profile={profile} onBack={() => setPanel(null)} />
+      )}
+      {panel === 'save' && (
+        <SaveDataPanel
+          profile={profile}
+          onBack={() => setPanel(null)}
+          onImport={props.onImportSave}
+          onReset={props.onResetProgress}
+          onToast={showToast}
+        />
+      )}
 
       {/* --------------------------- Daily modal ---------------------------- */}
       {dailyOpen && gameState === 'menu' && (
@@ -262,64 +300,131 @@ export function GameUI(props: Props) {
 
       {/* ----------------------------- Settings ----------------------------- */}
       {gameState === 'settings' && (
-        <div className="pointer-events-auto flex flex-1 items-center justify-center bg-black/60 p-6 backdrop-blur-sm">
-          <div className="w-full max-w-sm rounded-3xl bg-gradient-to-b from-[#3d2914] to-[#1a1208] p-6 shadow-2xl ring-1 ring-amber-700/40">
-            <h2 className="font-display text-2xl font-bold text-amber-100">Settings</h2>
-            <div className="mt-5 space-y-4">
-              <Toggle label="Sound Effects" value={settings.sound} onChange={(v) => props.onUpdateSettings({ sound: v })} />
-              <Toggle label="Music" value={settings.music} onChange={(v) => props.onUpdateSettings({ music: v })} />
-              <Toggle label="Vibration" value={settings.vibrate} onChange={(v) => props.onUpdateSettings({ vibrate: v })} />
-              <Toggle label="Screen Shake" value={settings.screenShake} onChange={(v) => props.onUpdateSettings({ screenShake: v })} />
-              <div>
-                <div className="mb-2 text-sm text-amber-100/80">Graphics Quality</div>
-                <div className="grid grid-cols-2 gap-2">
-                  {(['high', 'low'] as const).map((q) => (
-                    <button
-                      key={q}
-                      type="button"
-                      onClick={() => props.onUpdateSettings({ quality: q })}
-                      className={`rounded-xl px-2 py-2 text-sm font-semibold capitalize transition ${
-                        settings.quality === q
-                          ? 'bg-amber-500 text-[#1a1208] shadow'
-                          : 'bg-white/10 text-white/80 hover:bg-white/15'
-                      }`}
-                    >
-                      {q === 'high' ? '✨ High' : '⚡ Low (fast)'}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <div className="mb-2 text-sm text-amber-100/80">Difficulty</div>
-                <div className="grid grid-cols-3 gap-2">
-                  {(['easy', 'normal', 'hard'] as const).map((d) => (
-                    <button
-                      key={d}
-                      type="button"
-                      onClick={() => props.onUpdateSettings({ difficulty: d })}
-                      className={`rounded-xl px-2 py-2 text-sm font-semibold capitalize transition ${
-                        settings.difficulty === d
-                          ? 'bg-amber-500 text-[#1a1208] shadow'
-                          : 'bg-white/10 text-white/80 hover:bg-white/15'
-                      }`}
-                    >
-                      {d}
-                    </button>
-                  ))}
-                </div>
-              </div>
+        <div data-ui className="pointer-events-auto absolute inset-0 z-20 flex flex-col bg-[#0d0904]/85 backdrop-blur-md">
+          <div className="anim-fade-up mx-auto flex h-full w-full max-w-md flex-col overflow-hidden bg-gradient-to-b from-[#33210f] to-[#150e06] shadow-2xl sm:my-auto sm:h-auto sm:max-h-[92%] sm:rounded-3xl sm:ring-1 sm:ring-amber-700/30">
+            <div className="flex shrink-0 items-center gap-3 border-b border-amber-900/40 bg-black/25 px-4 pb-3 pt-[max(0.9rem,env(safe-area-inset-top))]">
+              <button
+                type="button"
+                data-ui
+                onClick={props.onMenu}
+                aria-label="Back"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white/10 text-xl text-white ring-1 ring-white/10 transition active:scale-95"
+              >
+                ←
+              </button>
+              <h2 className="font-display flex items-center gap-2 text-xl font-bold text-amber-50">
+                ⚙️ Settings
+              </h2>
             </div>
-            <ResetProgressButton onReset={props.onResetProgress} />
-            <button
-              type="button"
-              onClick={props.onMenu}
-              className="mt-4 w-full rounded-2xl bg-white/10 py-3 font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15 active:scale-[0.98]"
+
+            <div
+              data-ui
+              className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-4"
+              style={{ WebkitOverflowScrolling: 'touch' }}
             >
-              Back
-            </button>
-            <p className="mt-3 text-center text-[10px] text-white/40">
-              Progress saves automatically · Ads are always optional, never forced
-            </p>
+              <section className="space-y-2">
+                <SectionLabel>Audio</SectionLabel>
+                <UIToggle
+                  label="Sound Effects"
+                  hint="Pickups, jumps and impacts"
+                  value={settings.sound}
+                  onChange={(v) => props.onUpdateSettings({ sound: v })}
+                />
+                <UIToggle
+                  label="Music"
+                  hint="Adaptive masinko & kebero score"
+                  value={settings.music}
+                  onChange={(v) => props.onUpdateSettings({ music: v })}
+                />
+              </section>
+
+              <section className="space-y-2">
+                <SectionLabel>Feedback</SectionLabel>
+                <UIToggle
+                  label="Vibration"
+                  hint="Haptic pulse on swipes and hits"
+                  value={settings.vibrate}
+                  onChange={(v) => props.onUpdateSettings({ vibrate: v })}
+                />
+                <UIToggle
+                  label="Screen Shake"
+                  hint="Turn off if motion bothers you"
+                  value={settings.screenShake}
+                  onChange={(v) => props.onUpdateSettings({ screenShake: v })}
+                />
+              </section>
+
+              <section className="space-y-3">
+                <SectionLabel>Performance</SectionLabel>
+                <Segmented
+                  label="Graphics Quality"
+                  hint="Auto-adjusts to hold 60fps"
+                  value={settings.quality}
+                  onChange={(q) => props.onUpdateSettings({ quality: q })}
+                  options={[
+                    { value: 'high', label: '✨ High' },
+                    { value: 'low', label: '⚡ Fast' },
+                  ]}
+                />
+                <Segmented
+                  label="Difficulty"
+                  value={settings.difficulty}
+                  onChange={(d) => props.onUpdateSettings({ difficulty: d })}
+                  options={[
+                    { value: 'easy', label: 'Easy' },
+                    { value: 'normal', label: 'Normal' },
+                    { value: 'hard', label: 'Hard' },
+                  ]}
+                />
+              </section>
+
+              <section className="space-y-2">
+                <SectionLabel>Controls & Accessibility</SectionLabel>
+                <UIToggle
+                  label="On-Screen Buttons"
+                  hint="Show a D-pad as well as swipe gestures"
+                  value={settings.touchButtons}
+                  onChange={(v) => props.onUpdateSettings({ touchButtons: v })}
+                />
+                {settings.touchButtons && (
+                  <UIToggle
+                    label="Left-Handed Layout"
+                    hint="Mirror the on-screen buttons"
+                    value={settings.leftHanded}
+                    onChange={(v) => props.onUpdateSettings({ leftHanded: v })}
+                  />
+                )}
+                <UIToggle
+                  label="Reduced Motion"
+                  hint="Calmer camera, no speed lines or shake"
+                  value={settings.reducedMotion}
+                  onChange={(v) => props.onUpdateSettings({ reducedMotion: v })}
+                />
+              </section>
+
+              <section className="space-y-2">
+                <SectionLabel>Data</SectionLabel>
+                <button
+                  type="button"
+                  data-ui
+                  onClick={() => setPanel('save')}
+                  className="flex w-full items-center justify-between gap-3 rounded-2xl bg-white/[0.06] px-4 py-3 text-left ring-1 ring-white/10 transition active:scale-[0.99]"
+                >
+                  <span>
+                    <span className="block text-sm font-semibold text-amber-50">💾 Save Data</span>
+                    <span className="block text-[11px] text-white/45">
+                      Back up, transfer or reset your progress
+                    </span>
+                  </span>
+                  <span className="text-white/40">›</span>
+                </button>
+              </section>
+
+              <p className="pb-2 text-center text-[10px] leading-relaxed text-white/35">
+                Progress saves automatically · Ads are always optional, never forced
+              </p>
+              <div className="h-[max(0.5rem,env(safe-area-inset-bottom))]" />
+            </div>
           </div>
         </div>
       )}
@@ -345,6 +450,7 @@ export function GameUI(props: Props) {
           summary={props.lastSummary}
           report={props.runReport}
           canRevive={props.canRevive}
+          bestScore={profile.stats.bestScore}
           onReviveAd={() => setAdMode('revive')}
           onShare={async () => {
             const res = await props.onShare();
@@ -357,8 +463,22 @@ export function GameUI(props: Props) {
         />
       )}
 
+      {/* optional on-screen controls */}
+      {gameState === 'playing' && settings.touchButtons && (
+        <TouchControls
+          leftHanded={settings.leftHanded}
+          onLeft={() => props.onMoveLane(-1)}
+          onRight={() => props.onMoveLane(1)}
+          onJump={props.onJump}
+          onSlide={props.onSlide}
+          vibrate={(ms) => {
+            if (settings.vibrate && navigator.vibrate) navigator.vibrate(ms);
+          }}
+        />
+      )}
+
       {/* touch hints */}
-      {gameState === 'playing' && hud.distance < 25 && (
+      {gameState === 'playing' && hud.distance < 25 && !settings.touchButtons && (
         <div className="pointer-events-none absolute bottom-6 left-0 right-0 flex justify-center px-4">
           <div className="rounded-full bg-black/45 px-4 py-2 text-center text-xs text-white/85 backdrop-blur">
             Swipe ← → lanes · ↑ jump · ↓ slide
@@ -409,12 +529,21 @@ export function GameUI(props: Props) {
   );
 }
 
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="px-1 text-[10px] font-bold uppercase tracking-[0.18em] text-amber-200/50">
+      {children}
+    </div>
+  );
+}
+
 /* ================================ sub-screens ================================ */
 
 function GameOverScreen({
   summary,
   report,
   canRevive,
+  bestScore,
   onReviveAd,
   onShare,
   onPlay,
@@ -423,6 +552,7 @@ function GameOverScreen({
   summary: RunSummary;
   report: RunReport | null;
   canRevive: boolean;
+  bestScore: number;
   onReviveAd: () => void;
   onShare: () => void;
   onPlay: () => void;
@@ -431,9 +561,17 @@ function GameOverScreen({
   const region = summary.biomesVisited.length
     ? BIOME_LABELS[summary.biomesVisited[summary.biomesVisited.length - 1]]
     : 'Coffee Highlands';
+  const tier = tierFor(bestScore);
+  const beatBest = report?.newBest;
+  const gapToBest = bestScore - summary.score;
+
   return (
-    <div className="pointer-events-auto flex flex-1 items-center justify-center overflow-y-auto bg-gradient-to-b from-black/50 via-[#2a1008]/70 to-black/80 p-5 backdrop-blur-[2px]">
-      <div className="w-full max-w-sm rounded-3xl bg-gradient-to-b from-[#4a2810] to-[#1a1008] p-6 shadow-2xl ring-1 ring-orange-700/40">
+    <div
+      data-ui
+      className="pointer-events-auto absolute inset-0 z-20 flex flex-col overflow-y-auto overscroll-contain bg-gradient-to-b from-black/55 via-[#2a1008]/75 to-black/85 px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-[max(1.25rem,env(safe-area-inset-top))] backdrop-blur-[2px]"
+      style={{ WebkitOverflowScrolling: 'touch' }}
+    >
+      <div className="anim-fade-up m-auto w-full max-w-sm rounded-3xl bg-gradient-to-b from-[#4a2810] to-[#1a1008] p-6 shadow-2xl ring-1 ring-orange-700/40">
         <div className="text-center">
           <div className="text-4xl">💥</div>
           <h2 className="font-display mt-1 text-3xl font-black text-white">Game Over</h2>
@@ -484,9 +622,27 @@ function GameOverScreen({
           </p>
         )}
 
+        {/* How this run sat against your personal best — the hook for one more go. */}
+        <div className="mt-3 rounded-2xl bg-black/25 p-3 ring-1 ring-white/8">
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <span className="flex items-center gap-1.5 text-white/60">
+              <span aria-hidden>{tier.icon}</span>
+              <span className={tier.color}>{tier.name}</span>
+            </span>
+            <span className="tabular-nums text-white/45">
+              Best {bestScore.toLocaleString()}
+            </span>
+          </div>
+          {!beatBest && gapToBest > 0 && (
+            <p className="mt-1.5 text-center text-[11px] text-amber-200/70">
+              {gapToBest.toLocaleString()} more to beat your best
+            </p>
+          )}
+        </div>
+
         <div className="mt-5 flex flex-col gap-2">
           {canRevive && (
-            <button
+            <button data-ui
               type="button"
               onClick={onReviveAd}
               className="anim-pop w-full rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 py-3.5 text-base font-black text-white shadow-lg shadow-emerald-900/40 ring-1 ring-emerald-300/40 transition hover:brightness-110 active:scale-[0.98]"
@@ -543,7 +699,7 @@ function RunnerPanel({
                 {selected ? (
                   <Badge tone="amber">Selected</Badge>
                 ) : owned ? (
-                  <button
+                  <button data-ui
                     type="button"
                     onClick={() => onSelectCharacter(c.id)}
                     className="w-full rounded-xl bg-white/10 py-1.5 text-xs font-semibold text-white ring-1 ring-white/15 transition hover:bg-white/20 active:scale-95"
@@ -551,7 +707,7 @@ function RunnerPanel({
                     Select
                   </button>
                 ) : (
-                  <button
+                  <button data-ui
                     type="button"
                     onClick={() => onBuyCharacter(c.id)}
                     disabled={!canAfford}
@@ -596,7 +752,7 @@ function RunnerPanel({
               {selected ? (
                 <Badge tone="amber">On</Badge>
               ) : owned ? (
-                <button
+                <button data-ui
                   type="button"
                   onClick={() => onSelectOutfit(o.id)}
                   className="rounded-lg bg-white/10 px-2 py-1 text-[10px] font-semibold text-white ring-1 ring-white/15 active:scale-95"
@@ -604,7 +760,7 @@ function RunnerPanel({
                   Wear
                 </button>
               ) : (
-                <button
+                <button data-ui
                   type="button"
                   onClick={() => onBuyOutfit(o.id)}
                   disabled={!canAfford}
@@ -643,7 +799,7 @@ function ShopPanel({
           <div className="text-sm font-bold text-white">Free Coins</div>
           <div className="text-[11px] text-white/60">Watch a short optional ad · +75 🪙</div>
         </div>
-        <button
+        <button data-ui
           type="button"
           onClick={onFreeCoins}
           className="rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 px-3 py-2 text-xs font-bold text-white shadow transition active:scale-95"
@@ -668,7 +824,7 @@ function ShopPanel({
               </div>
               <div className="text-[11px] text-white/50">{pw.desc}</div>
             </div>
-            <button
+            <button data-ui
               type="button"
               onClick={() => onBuyPowerUp(pw.id)}
               disabled={profile.coins < pw.costCoins}
@@ -689,7 +845,7 @@ function ShopPanel({
       </div>
       <div className="mt-2 grid grid-cols-2 gap-2">
         {CHARACTERS.filter((c) => !profile.ownedCharacters.includes(c.id)).map((c) => (
-          <button
+          <button data-ui
             key={c.id}
             type="button"
             onClick={() => onBuyCharacter(c.id)}
@@ -708,7 +864,7 @@ function ShopPanel({
           </button>
         ))}
         {OUTFITS.filter((o) => !profile.ownedOutfits.includes(o.id)).map((o) => (
-          <button
+          <button data-ui
             key={o.id}
             type="button"
             onClick={() => onBuyOutfit(o.id)}
@@ -746,53 +902,85 @@ function MissionsPanel({
   onBack: () => void;
   onClaim: (id: string) => void;
 }) {
+  const claimable = profile.missions.filter((m) => {
+    const d = missionDef(m.id);
+    return d && !m.claimed && m.progress >= d.target;
+  }).length;
+  const doneCount = profile.missions.filter((m) => m.claimed).length;
+
+  // Missions reset at local midnight; show how long is left.
+  const msLeft = (() => {
+    const now = new Date();
+    const midnight = new Date(now);
+    midnight.setHours(24, 0, 0, 0);
+    return midnight.getTime() - now.getTime();
+  })();
+  const hrsLeft = Math.floor(msLeft / 3_600_000);
+  const minsLeft = Math.floor((msLeft % 3_600_000) / 60_000);
+
+  const tierMeta: Record<string, { label: string; tone: 'green' | 'gold' | 'red' }> = {
+    easy: { label: 'Easy', tone: 'green' },
+    medium: { label: 'Medium', tone: 'gold' },
+    hard: { label: 'Hard', tone: 'red' },
+  };
+
   return (
-    <PanelShell title="Daily Missions" onBack={onBack}>
-      <p className="mb-3 text-center text-[11px] text-white/50">
-        New missions every day · progress saves between runs
-      </p>
-      <div className="space-y-2">
+    <Sheet
+      title="Daily Missions"
+      subtitle={`Resets in ${hrsLeft}h ${minsLeft}m`}
+      icon="🎯"
+      onBack={onBack}
+      right={<Pill tone={claimable > 0 ? 'green' : 'neutral'}>{doneCount}/3</Pill>}
+    >
+      <div className="space-y-2.5">
         {profile.missions.map((m) => {
           const def = missionDef(m.id);
           if (!def) return null;
-          const pct = Math.min(100, (m.progress / def.target) * 100);
           const ready = m.progress >= def.target && !m.claimed;
+          const tier = tierMeta[def.tier] ?? tierMeta.medium;
           return (
-            <div key={m.id} className="rounded-2xl bg-black/30 p-3 ring-1 ring-white/10">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-sm font-semibold text-white">{def.label}</div>
+            <Card key={m.id} glow={ready}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="mb-1 flex items-center gap-1.5">
+                    <Pill tone={tier.tone}>{tier.label}</Pill>
+                    {def.rewardGems > 0 && <Pill tone="blue">💎 {def.rewardGems}</Pill>}
+                    {def.rewardCoins > 0 && <Pill tone="gold">🪙 {def.rewardCoins}</Pill>}
+                  </div>
+                  <div className="text-sm font-semibold leading-snug text-amber-50">
+                    {def.label}
+                  </div>
+                </div>
                 {m.claimed ? (
-                  <Badge tone="green">✓ Done</Badge>
+                  <Pill tone="green">✓ Claimed</Pill>
                 ) : ready ? (
                   <button
                     type="button"
+                    data-ui
                     onClick={() => onClaim(m.id)}
-                    className="animate-pulse rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 px-3 py-1.5 text-xs font-bold text-white active:scale-95"
+                    className="shrink-0 animate-pulse rounded-xl bg-gradient-to-b from-emerald-400 to-green-600 px-3 py-2 text-xs font-bold text-white shadow-lg ring-1 ring-emerald-300/40 active:scale-95"
                   >
-                    Claim {def.rewardCoins > 0 ? `${def.rewardCoins}🪙` : ''}
-                    {def.rewardGems > 0 ? ` ${def.rewardGems}💎` : ''}
+                    Claim
                   </button>
-                ) : (
-                  <span className="text-xs tabular-nums text-white/50">
-                    {Math.floor(m.progress)}/{def.target}
-                  </span>
-                )}
+                ) : null}
               </div>
-              <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/10">
-                <div
-                  className={`h-full rounded-full transition-all ${
-                    ready || m.claimed
-                      ? 'bg-gradient-to-r from-emerald-400 to-green-500'
-                      : 'bg-gradient-to-r from-amber-500 to-orange-500'
-                  }`}
-                  style={{ width: `${pct}%` }}
+              <div className="mt-2.5">
+                <ProgressBar
+                  value={Math.min(m.progress, def.target)}
+                  max={def.target}
+                  tone={m.claimed || ready ? 'emerald' : 'amber'}
                 />
               </div>
-            </div>
+            </Card>
           );
         })}
       </div>
-    </PanelShell>
+
+      <p className="mt-4 text-center text-[10px] leading-relaxed text-white/35">
+        One easy, one medium and one hard mission every day. Progress carries
+        across runs and saves automatically.
+      </p>
+    </Sheet>
   );
 }
 
@@ -832,7 +1020,7 @@ function AwardsPanel({
               {claimed ? (
                 <span className="text-[10px] font-semibold text-emerald-300/70">Claimed</span>
               ) : done ? (
-                <button
+                <button data-ui
                   type="button"
                   onClick={() => onClaim(a.id)}
                   className="animate-pulse rounded-xl bg-gradient-to-r from-yellow-400 to-amber-500 px-3 py-1.5 text-xs font-bold text-[#1a1208] active:scale-95"
@@ -972,7 +1160,7 @@ function DailyModal({
           <div className="font-display text-xl font-bold text-amber-200">{reward.label}</div>
         </div>
         {ready ? (
-          <button
+          <button data-ui
             type="button"
             onClick={onClaim}
             className="mt-4 w-full rounded-2xl bg-gradient-to-r from-amber-500 via-orange-500 to-red-600 py-3 font-bold text-white shadow-lg transition active:scale-[0.98]"
@@ -982,7 +1170,7 @@ function DailyModal({
         ) : (
           <p className="mt-4 text-xs text-white/50">Come back tomorrow for the next gift!</p>
         )}
-        <button
+        <button data-ui
           type="button"
           onClick={onClose}
           className="mt-2 w-full rounded-2xl bg-white/10 py-2 text-sm font-semibold text-white/80 ring-1 ring-white/10 transition hover:bg-white/15"
@@ -1019,25 +1207,49 @@ const TUTORIAL_STEPS = [
 
 function TutorialOverlay({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState(0);
+  const total = TUTORIAL_STEPS.length;
+  const last = step === total - 1;
+
+  // The original version advanced on a 1.5s timer with no way to pause or go
+  // back, so a first-time player could easily miss a control explanation and
+  // have no way to see it again. Now it's fully player-paced.
+  const next = () => (last ? onDone() : setStep((v) => Math.min(total - 1, v + 1)));
+  const prev = () => setStep((v) => Math.max(0, v - 1));
 
   useEffect(() => {
-    if (step >= TUTORIAL_STEPS.length) {
-      const t = setTimeout(onDone, 250);
-      return () => clearTimeout(t);
-    }
-    const t = setTimeout(() => setStep((s) => s + 1), 1500);
-    return () => clearTimeout(t);
-  }, [step, onDone]);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowRight' || e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        next();
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        prev();
+      } else if (e.key === 'Escape') {
+        onDone();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 
-  const s = TUTORIAL_STEPS[Math.min(step, TUTORIAL_STEPS.length - 1)];
+  const s = TUTORIAL_STEPS[step];
 
   return (
-    <div className="pointer-events-auto fixed inset-0 z-40 flex items-center justify-center bg-black/85 p-6 backdrop-blur-sm">
+    <div
+      data-ui
+      className="pointer-events-auto fixed inset-0 z-40 flex items-center justify-center bg-black/85 p-6 backdrop-blur-sm"
+      role="dialog"
+      aria-label="How to play"
+    >
       <div className="w-full max-w-xs text-center">
         <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-amber-300/70">
-          How to run
+          How to run · {step + 1} of {total}
         </div>
-        <div key={step} className="anim-pop mt-4 rounded-3xl bg-gradient-to-b from-[#3d2914] to-[#1a1208] p-7 ring-1 ring-amber-600/40">
+
+        <div
+          key={step}
+          className="anim-pop mt-4 rounded-3xl bg-gradient-to-b from-[#3d2914] to-[#1a1208] p-7 ring-1 ring-amber-600/40"
+        >
           <div className="flex items-center justify-center gap-4">
             <span className="text-5xl">{s.icon}</span>
             <GestureArrow dir={s.gesture} />
@@ -1048,8 +1260,12 @@ function TutorialOverlay({ onDone }: { onDone: () => void }) {
 
         <div className="mt-5 flex items-center justify-center gap-2">
           {TUTORIAL_STEPS.map((_, i) => (
-            <span
+            <button
+              data-ui
               key={i}
+              type="button"
+              aria-label={`Go to step ${i + 1}`}
+              onClick={() => setStep(i)}
               className={`h-2 rounded-full transition-all ${
                 i === step ? 'w-6 bg-amber-400' : i < step ? 'w-2 bg-amber-500/50' : 'w-2 bg-white/20'
               }`}
@@ -1057,12 +1273,33 @@ function TutorialOverlay({ onDone }: { onDone: () => void }) {
           ))}
         </div>
 
+        <div className="mt-5 flex items-center gap-2">
+          <button
+            data-ui
+            type="button"
+            onClick={prev}
+            disabled={step === 0}
+            className="min-h-[46px] flex-1 rounded-2xl bg-white/10 px-4 text-sm font-semibold text-white/80 ring-1 ring-white/15 transition active:scale-95 disabled:pointer-events-none disabled:opacity-30"
+          >
+            Back
+          </button>
+          <button
+            data-ui
+            type="button"
+            onClick={next}
+            className="font-display min-h-[46px] flex-[1.4] rounded-2xl bg-gradient-to-b from-amber-400 to-amber-600 px-4 text-sm font-bold text-[#2a1a08] shadow-lg transition active:scale-95"
+          >
+            {last ? "Let's run!" : 'Next'}
+          </button>
+        </div>
+
         <button
+          data-ui
           type="button"
-          onClick={() => setStep(TUTORIAL_STEPS.length)}
-          className="mt-5 rounded-full bg-white/10 px-5 py-2 text-sm font-semibold text-white/80 ring-1 ring-white/15 transition hover:bg-white/15 active:scale-95"
+          onClick={onDone}
+          className="mt-3 px-5 py-2 text-xs font-semibold text-white/45 transition active:scale-95"
         >
-          Skip → Let's run!
+          Skip tutorial
         </button>
       </div>
     </div>
@@ -1115,35 +1352,6 @@ function ScoreCountUp({ target }: { target: number }) {
   return <span className="tabular-nums">{val.toLocaleString()}</span>;
 }
 
-function ResetProgressButton({ onReset }: { onReset: () => void }) {
-  const [confirming, setConfirming] = useState(false);
-  useEffect(() => {
-    if (!confirming) return;
-    const t = setTimeout(() => setConfirming(false), 3000);
-    return () => clearTimeout(t);
-  }, [confirming]);
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        if (confirming) {
-          onReset();
-          setConfirming(false);
-        } else {
-          setConfirming(true);
-        }
-      }}
-      className={`mt-6 w-full rounded-2xl py-2.5 text-sm font-semibold ring-1 transition active:scale-[0.98] ${
-        confirming
-          ? 'bg-red-600 text-white ring-red-400/50'
-          : 'bg-white/5 text-red-300/80 ring-red-500/20 hover:bg-red-500/10'
-      }`}
-    >
-      {confirming ? 'Tap again to erase ALL progress' : 'Reset Progress'}
-    </button>
-  );
-}
-
 function RewardedAdModal({
   mode,
   onClose,
@@ -1183,7 +1391,7 @@ function RewardedAdModal({
 
         <div className="p-4">
           {done ? (
-            <button
+            <button data-ui
               type="button"
               onClick={onComplete}
               className="anim-pop w-full rounded-2xl bg-gradient-to-r from-emerald-500 to-green-600 py-3 font-black text-white shadow-lg ring-1 ring-emerald-300/40 transition active:scale-[0.98]"
@@ -1191,7 +1399,7 @@ function RewardedAdModal({
               {mode === 'coins' ? 'Claim +75 🪙' : 'Revive & Keep Running'}
             </button>
           ) : (
-            <button
+            <button data-ui
               type="button"
               onClick={onClose}
               className="w-full rounded-2xl bg-white/10 py-3 text-sm font-semibold text-white/70 ring-1 ring-white/10 transition hover:bg-white/15"
@@ -1222,7 +1430,7 @@ function PanelShell({
   return (
     <div className="pointer-events-auto flex flex-1 flex-col overflow-hidden bg-gradient-to-b from-[#1a1208]/80 via-[#241509]/70 to-[#1a1208]/90 backdrop-blur-[2px]">
       <div className="flex items-center gap-3 px-4 pt-[max(1rem,env(safe-area-inset-top))]">
-        <button
+        <button data-ui
           type="button"
           onClick={onBack}
           className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white ring-1 ring-white/15 transition hover:bg-white/20 active:scale-95"
@@ -1249,7 +1457,7 @@ function WalletBar({ profile }: { profile: Profile }) {
 
 function DailyButton({ ready, streak, onClick }: { ready: boolean; streak: number; onClick: () => void }) {
   return (
-    <button
+    <button data-ui
       type="button"
       onClick={onClick}
       className={`relative rounded-full px-3 py-1.5 text-sm font-bold ring-1 backdrop-blur-md transition active:scale-95 ${
@@ -1276,7 +1484,7 @@ function NavTile({
   onClick: () => void;
 }) {
   return (
-    <button
+    <button data-ui
       type="button"
       onClick={onClick}
       className="relative flex flex-col items-center gap-1 rounded-2xl bg-white/10 py-3 ring-1 ring-white/15 transition hover:bg-white/15 active:scale-95"
@@ -1325,7 +1533,7 @@ function MenuButton({
   primary?: boolean;
 }) {
   return (
-    <button
+    <button data-ui
       type="button"
       onClick={onClick}
       className={`w-full rounded-2xl py-3 text-base font-bold tracking-wide transition active:scale-[0.98] ${
@@ -1335,33 +1543,6 @@ function MenuButton({
       }`}
     >
       {children}
-    </button>
-  );
-}
-
-function Toggle({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={() => onChange(!value)}
-      className="flex w-full items-center justify-between rounded-xl bg-white/5 px-3 py-3 ring-1 ring-white/10"
-    >
-      <span className="text-sm font-medium text-amber-50">{label}</span>
-      <span className={`relative h-7 w-12 rounded-full transition ${value ? 'bg-amber-500' : 'bg-white/20'}`}>
-        <span
-          className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition ${
-            value ? 'left-5' : 'left-0.5'
-          }`}
-        />
-      </span>
     </button>
   );
 }

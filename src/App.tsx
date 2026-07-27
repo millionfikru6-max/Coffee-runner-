@@ -1,10 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { GameUI } from './components/GameUI';
 import { LoadingScreen } from './components/LoadingScreen';
+import { UnsupportedScreen, detectWebGL } from './components/ErrorBoundary';
 import { useGameLoop } from './game/useGameLoop';
 
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null);
+  // Probe before booting so an unsupported device gets an explanation rather
+  // than a black canvas.
+  const webgl = useMemo(() => detectWebGL(), []);
   const game = useGameLoop(containerRef);
   const [booted, setBooted] = useState(false);
   const [loadingGone, setLoadingGone] = useState(false);
@@ -13,6 +17,9 @@ export default function App() {
     const t = setTimeout(() => setBooted(true), 1500);
     return () => clearTimeout(t);
   }, []);
+
+  if (!webgl.ok) return <UnsupportedScreen reason={webgl.reason} />;
+  if (game.bootError) return <UnsupportedScreen reason={game.bootError} />;
 
   return (
     <div className="fixed inset-0 overflow-hidden bg-[#1a1208] select-none">
@@ -54,6 +61,10 @@ export default function App() {
           onRevive={game.onRevive}
           onTutorialDone={game.onTutorialDone}
           onShare={game.onShare}
+          onImportSave={game.onImportSave}
+          onMoveLane={game.onMoveLane}
+          onJump={game.onJump}
+          onSlide={game.onSlide}
         />
       </div>
 

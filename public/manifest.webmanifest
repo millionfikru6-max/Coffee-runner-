@@ -1,0 +1,23 @@
+{
+  "name": "Coffee Runner: The Heart of Ethiopia",
+  "short_name": "Coffee Runner",
+  "description": "An endless 3D runner through Ethiopia's coffee highlands, tukul villages, Addis Ababa, the Simien Mountains, and the Blue Nile gorge.",
+  "id": "coffee-runner-heart-of-ethiopia",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["fullscreen", "standalone", "minimal-ui"],
+  "orientation": "portrait",
+  "background_color": "#1a1208",
+  "theme_color": "#1a1208",
+  "categories": ["games", "entertainment"],
+  "lang": "en",
+  "dir": "ltr",
+  "prefer_related_applications": false,
+  "icons": [
+    { "src": "./icons/favicon-32.png", "sizes": "32x32", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
