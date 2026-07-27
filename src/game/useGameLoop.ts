@@ -99,6 +99,7 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
   const [lastSummary, setLastSummary] = useState<RunSummary | null>(null);
   const lastSummaryRef = useRef<RunSummary | null>(null);
   const [canRevive, setCanRevive] = useState(false);
+  const [bootError, setBootError] = useState<string | null>(null);
   const reviveUsedRef = useRef(false);
   const wakeLockRef = useRef<{ release: () => Promise<void> } | null>(null);
 
@@ -175,7 +176,14 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     const w = Math.max(320, Math.floor(rect.width));
     const h = Math.max(480, Math.floor(rect.height));
     const engine = new GameEngine({ width: w, height: h, settings });
-    const renderer = new Scene3D(canvas, buildAppearance(profileRef.current), settings.quality);
+    let renderer: Scene3D;
+    try {
+      renderer = new Scene3D(canvas, buildAppearance(profileRef.current), settings.quality);
+    } catch (err) {
+      // Surface the failure to the shell rather than leaving a black canvas.
+      setBootError(err instanceof Error ? err.message : 'Renderer failed to start');
+      return;
+    }
     engine.setAppearance(buildAppearance(profileRef.current));
     engineRef.current = engine;
     rendererRef.current = renderer;
@@ -334,10 +342,11 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
   );
 
   useEffect(() => {
+    if (bootError) return;
     lastRef.current = 0;
     rafRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [loop]);
+  }, [loop, bootError]);
 
   const startGame = useCallback(() => {
     const engine = engineRef.current;
@@ -663,6 +672,7 @@ export function useGameLoop(containerRef: React.RefObject<HTMLDivElement | null>
     runReport,
     lastSummary,
     canRevive,
+    bootError,
     startGame,
     pauseGame,
     resumeGame,

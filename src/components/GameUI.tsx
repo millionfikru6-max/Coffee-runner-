@@ -63,6 +63,22 @@ export function GameUI(props: Props) {
   const [adMode, setAdMode] = useState<null | 'coins' | 'revive'>(null);
   const [toast, setToast] = useState<{ msg: string; key: number } | null>(null);
   const [tutorialOpen, setTutorialOpen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => {});
+    } else {
+      // Not supported on iOS Safari; failing quietly is the right call.
+      void document.documentElement.requestFullscreen?.().catch(() => {});
+    }
+  };
 
   const handlePlay = () => {
     if (!profile.tutorialDone) {
@@ -224,14 +240,14 @@ export function GameUI(props: Props) {
             <NavTile emoji="⚙️" label="Settings" onClick={props.onSettings} />
           </div>
 
+          {/*
+            window.close() only works for script-opened windows, so the old
+            "Exit" button did nothing in a normal tab. Offer fullscreen
+            instead, which is what players actually want on a phone.
+          */}
           <div className="mx-auto mt-4 flex w-full max-w-xs flex-col gap-2">
-            <MenuButton
-              onClick={() => {
-                if (document.fullscreenElement) void document.exitFullscreen();
-                window.close();
-              }}
-            >
-              Exit
+            <MenuButton onClick={toggleFullscreen}>
+              {isFullscreen ? '🗗 Exit Fullscreen' : '⛶ Play Fullscreen'}
             </MenuButton>
           </div>
 
