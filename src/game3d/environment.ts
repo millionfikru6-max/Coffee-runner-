@@ -9,9 +9,93 @@
  */
 
 import * as THREE from 'three';
+import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { Biome, WorldState } from '../game/types';
 import { G, type Quality, mat, mulberry32, parseColor } from './core';
 import type { TerrainPalette } from '../game/world';
+
+/**
+ * Wind shader injected into foliage materials.
+ *
+ * Every plant used to be its own Object3D swaying on the CPU, which meant one
+ * draw call per bush. Now props are merged into a handful of meshes per chunk
+ * and the sway happens in the vertex shader instead — the motion is per-vertex
+ * (so tall plants bend more than short ones, which looks better than rigidly
+ * rotating a whole bush) and it costs zero extra draw calls.
+ */
+const windUniforms = { uTime: { value: 0 }, uWind: { value: 0.3 } };
+
+export function applyWind(material: THREE.Material, strength = 1) {
+  const m = material as THREE.Material & { userData: { windApplied?: boolean } };
+  if (m.userData.windApplied) return material;
+  m.userData.windApplied = true;
+  m.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = windUniforms.uTime;
+    shader.uniforms.uWind = windUniforms.uWind;
+    shader.uniforms.uWindAmp = { value: strength };
+    shader.vertexShader =
+      'uniform float uTime;\nuniform float uWind;\nuniform float uWindAmp;\n' +
+      shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+         // Sway scales with height above the prop base, so trunks stay planted
+         // and canopies move — and each prop gets a phase offset from its
+         // world position so a field doesn't pulse in unison.
+         float bend = max(0.0, transformed.y) * 0.055 * uWindAmp;
+         float phase = uTime * 1.6 + (modelMatrix[3][0] + modelMatrix[3][2]) * 0.35 + position.x * 0.12;
+         float gust = 0.6 + 0.4 * sin(uTime * 0.37);
+         transformed.x += sin(phase) * bend * (0.35 + uWind) * gust;
+         transformed.z += cos(phase * 0.83) * bend * 0.55 * (0.35 + uWind) * gust;`,
+      );
+  };
+  m.needsUpdate = true;
+  return material;
+}
+
+/** Advance the shared wind clock. Called once per frame. */
+export function updateWind(time: number, wind: number) {
+  windUniforms.uTime.value = time;
+  windUniforms.uWind.value = wind;
+}
+
+/**
+ * Flatten a prop hierarchy into merged geometry grouped by material.
+ * This is the core mobile optimisation: a tukul made of 7 meshes and a coffee
+ * bush made of 9 stop being 16 draw calls and become part of one.
+ */
+function collectGeometry(
+  root: THREE.Object3D,
+  out: Map<THREE.Material, THREE.BufferGeometry[]>,
+  parentMatrix: THREE.Matrix4,
+) {
+  root.updateMatrixWorld(true);
+  root.traverse((n) => {
+    const mesh = n as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const material = mesh.material as THREE.Material;
+    if (Array.isArray(mesh.material)) return;
+    const g = mesh.geometry.clone();
+    const m = new THREE.Matrix4().multiplyMatrices(parentMatrix, mesh.matrixWorld);
+    g.applyMatrix4(m);
+    // Merging requires identical attribute sets; drop anything exotic.
+    for (const key of Object.keys(g.attributes)) {
+      if (key !== 'position' && key !== 'normal' && key !== 'uv') g.deleteAttribute(key);
+    }
+    if (!g.attributes.uv) {
+      const count = g.attributes.position.count;
+      g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(count * 2), 2));
+    }
+    if (!g.attributes.normal) g.computeVertexNormals();
+    // mergeGeometries requires every input to agree on indexing. Our shapes
+    // are a mix (ShapeGeometry is indexed, others aren't), so flatten them
+    // all to non-indexed before merging.
+    const flat = g.index ? g.toNonIndexed() : g;
+    if (flat !== g) g.dispose();
+    const list = out.get(material) ?? [];
+    list.push(flat);
+    out.set(material, list);
+  });
+}
 
 export const CHUNK_LEN = 20;
 const CHUNK_COUNT_HIGH = 11;
@@ -20,10 +104,7 @@ const ROAD_W = 7.4;
 
 interface ChunkProp {
   obj: THREE.Object3D;
-  /** Local z within the chunk. */
   spin?: number;
-  sway?: number;
-  flap?: number;
 }
 
 class Chunk {
@@ -98,29 +179,69 @@ class Chunk {
     this.groundMats[0].color.copy(parseColor(t.roadDark));
   }
 
+  /** Geometry staged for merging this rebuild. */
+  private pending = new Map<THREE.Material, THREE.BufferGeometry[]>();
+  private batches: THREE.Mesh[] = [];
+
   clearProps() {
     for (const p of this.props) {
       this.content.remove(p.obj);
       disposeTree(p.obj);
     }
     this.props.length = 0;
+    for (const b of this.batches) {
+      this.content.remove(b);
+      b.geometry.dispose();
+    }
+    this.batches.length = 0;
+    this.pending.clear();
   }
 
-  add(obj: THREE.Object3D, extra?: Omit<ChunkProp, 'obj'>) {
+  /**
+   * Stage a prop for merging. The source hierarchy is discarded — only its
+   * baked geometry survives, so a whole chunk of scenery collapses into one
+   * draw call per material.
+   */
+  add(obj: THREE.Object3D) {
+    obj.updateMatrixWorld(true);
+    collectGeometry(obj, this.pending, new THREE.Matrix4());
+    disposeTree(obj);
+  }
+
+  /** Props that must stay dynamic (rotating water wheels, etc.). */
+  addDynamic(obj: THREE.Object3D, spin?: number) {
     this.content.add(obj);
-    this.props.push({ obj, ...extra });
+    this.props.push({ obj, spin });
+  }
+
+  /** Merge everything staged since the last rebuild. */
+  finalise() {
+    for (const [material, geos] of this.pending) {
+      if (geos.length === 0) continue;
+      let merged: THREE.BufferGeometry | null = null;
+      try {
+        merged = BufferGeometryUtils.mergeGeometries(geos, false);
+      } catch {
+        merged = null;
+      }
+      for (const g of geos) g.dispose();
+      if (!merged) continue;
+      merged.userData.own = true;
+      merged.computeBoundingSphere();
+      const mesh = new THREE.Mesh(merged, material);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      this.content.add(mesh);
+      this.batches.push(mesh);
+    }
+    this.pending.clear();
   }
 
   animate(time: number, wind: number) {
     for (const p of this.props) {
       if (p.spin !== undefined) p.obj.rotation.y = time * p.spin;
-      if (p.sway !== undefined) {
-        p.obj.rotation.z = Math.sin(time * 1.3 + p.sway) * 0.045 * (0.5 + wind);
-      }
-      if (p.flap !== undefined) {
-        p.obj.rotation.y = Math.sin(time * 3 + p.flap) * 0.35 * (0.4 + wind);
-      }
     }
+    void wind;
   }
 
   get q() {
@@ -142,10 +263,10 @@ function disposeTree(o: THREE.Object3D) {
 const M = {
   bark: () => mat('bark', { color: 0x5a4030, roughness: 0.95, flat: true }),
   darkBark: () => mat('darkbark', { color: 0x3f2c1e, roughness: 0.95, flat: true }),
-  leafDark: () => mat('leafD', { color: 0x1f5c22, roughness: 0.88, flat: true }),
-  leafMid: () => mat('leafM', { color: 0x2f7a2c, roughness: 0.88, flat: true }),
-  leafLight: () => mat('leafL', { color: 0x489a3a, roughness: 0.88, flat: true }),
-  cherry: () => mat('cherry', { color: 0xc4271f, roughness: 0.5 }),
+  leafDark: () => applyWind(mat('leafD', { color: 0x1f5c22, roughness: 0.88, flat: true }), 1),
+  leafMid: () => applyWind(mat('leafM', { color: 0x2f7a2c, roughness: 0.88, flat: true }), 1),
+  leafLight: () => applyWind(mat('leafL', { color: 0x489a3a, roughness: 0.88, flat: true }), 1.2),
+  cherry: () => applyWind(mat('cherry', { color: 0xc4271f, roughness: 0.5 }), 1),
   thatch: () => mat('thatch', { color: 0xb08a4a, roughness: 1, flat: true }),
   thatchDark: () => mat('thatchD', { color: 0x8a6a34, roughness: 1, flat: true }),
   mudWall: () => mat('mud', { color: 0xc7a077, roughness: 0.98 }),
@@ -170,7 +291,7 @@ const M = {
   red: () => mat('red', { color: 0xc41e3a, roughness: 0.7 }),
   green: () => mat('greenP', { color: 0x0f8a3c, roughness: 0.7 }),
   yellow: () => mat('yellowP', { color: 0xf5c518, roughness: 0.6 }),
-  flowerY: () => mat('flowerY', { color: 0xffd23f, roughness: 0.6, emissive: 0x775500, emissiveIntensity: 0.25 }),
+  flowerY: () => applyWind(mat('flowerY', { color: 0xffd23f, roughness: 0.6, emissive: 0x775500, emissiveIntensity: 0.25 }), 1.6),
 };
 
 /** Coffee bush heavy with red cherries — the signature highland prop. */
@@ -341,7 +462,7 @@ function lobelia(rand: () => number, q: Quality): THREE.Group {
 /** Papyrus / reed clump for the Blue Nile banks. */
 function reeds(rand: () => number): THREE.Group {
   const g = new THREE.Group();
-  const m = mat('reed', { color: 0x8fa63f, roughness: 0.9 });
+  const m = applyWind(mat('reed', { color: 0x8fa63f, roughness: 0.9 }), 2.2);
   for (let i = 0; i < 7; i++) {
     const r = new THREE.Mesh(G.cylUp('low'), m);
     const h = 1.1 + rand() * 1.1;
@@ -644,6 +765,9 @@ export class Environment {
       c.applyPalette(palette);
       c.animate(time, world.wind);
     }
+    updateWind(time, world.wind);
+    {
+    }
 
     // ridges parallax subtly with travel so mountains feel far but alive
     const px = Math.sin(runnerZ * 0.0016) * 26;
@@ -692,9 +816,9 @@ export class Environment {
     const night = world.timeOfDay === 'night';
     const density = q === 'high' ? 1 : 0.55;
 
-    const place = (obj: THREE.Object3D, x: number, z: number, extra?: { spin?: number; sway?: number; flap?: number }) => {
+    const place = (obj: THREE.Object3D, x: number, z: number) => {
       obj.position.set(x, 0, z);
-      c.add(obj, extra);
+      c.add(obj);
     };
 
     // Side offset helper: keep everything clear of the road.
@@ -707,12 +831,12 @@ export class Environment {
           const b = coffeeBush(rand, q);
           const s = 0.85 + rand() * 0.5;
           b.scale.setScalar(s);
-          place(b, sideX(rand(), 4.9, 22), -rand() * CHUNK_LEN, { sway: rand() * 6 });
+          place(b, sideX(rand(), 4.9, 22), -rand() * CHUNK_LEN);
         }
         if (rand() < 0.7) place(terrace(rand, rand() < 0.5 ? -1 : 1), 0, -rand() * CHUNK_LEN);
         if (rand() < 0.45) place(dryingBed(rand), sideX(rand(), 7, 13), -rand() * CHUNK_LEN);
         if (rand() < 0.3) place(coffeeCeremony(q), sideX(rand(), 6.5, 10), -rand() * CHUNK_LEN);
-        if (rand() < 0.5) place(acacia(rand, q), sideX(rand(), 14, 30), -rand() * CHUNK_LEN, { sway: rand() * 6 });
+        if (rand() < 0.5) place(acacia(rand, q), sideX(rand(), 14, 30), -rand() * CHUNK_LEN);
         if (rand() < 0.6) place(meskelPatch(rand), sideX(rand(), 5, 14), -rand() * CHUNK_LEN);
         break;
       }
@@ -725,7 +849,7 @@ export class Environment {
         }
         if (rand() < 0.8) place(coffeeCeremony(q), sideX(rand(), 6, 9), -rand() * CHUNK_LEN);
         for (let i = 0; i < Math.round(3 * density); i++) {
-          place(enset(rand), sideX(rand(), 5.2, 16), -rand() * CHUNK_LEN, { sway: rand() * 6 });
+          place(enset(rand), sideX(rand(), 5.2, 16), -rand() * CHUNK_LEN);
         }
         if (rand() < 0.5) place(marketStand(rand, q), sideX(rand(), 6.5, 11), -rand() * CHUNK_LEN);
         // livestock fence line
@@ -782,7 +906,7 @@ export class Environment {
           place(r, sideX(rand(), 5.2, 26), -rand() * CHUNK_LEN);
         }
         for (let i = 0; i < Math.round(3 * density); i++) {
-          place(lobelia(rand, q), sideX(rand(), 5.4, 18), -rand() * CHUNK_LEN, { sway: rand() * 6 });
+          place(lobelia(rand, q), sideX(rand(), 5.4, 18), -rand() * CHUNK_LEN);
         }
         // escarpment wall: a dramatic cliff on one side
         if (rand() < 0.85) {
@@ -823,10 +947,10 @@ export class Environment {
         c.add(bank);
 
         for (let i = 0; i < Math.round(4 * density); i++) {
-          place(reeds(rand), side * (7 + rand() * 3), -rand() * CHUNK_LEN, { sway: rand() * 6 });
+          place(reeds(rand), side * (7 + rand() * 3), -rand() * CHUNK_LEN);
         }
         for (let i = 0; i < Math.round(3 * density); i++) {
-          place(acacia(rand, q), -side * (7 + rand() * 16), -rand() * CHUNK_LEN, { sway: rand() * 6 });
+          place(acacia(rand, q), -side * (7 + rand() * 16), -rand() * CHUNK_LEN);
         }
         if (rand() < 0.4) place(tukul(rand, q), -side * (11 + rand() * 8), -rand() * CHUNK_LEN);
         if (rand() < 0.5) place(meskelPatch(rand), -side * (5.5 + rand() * 8), -rand() * CHUNK_LEN);
@@ -836,13 +960,16 @@ export class Environment {
 
     // Roadside grass tufts everywhere — cheap and they hide the road/verge seam.
     const tufts = Math.round(10 * density);
-    const tuftMat = mat('tuft', { color: 0x3d6b2f, roughness: 0.95 });
+    const tuftMat = applyWind(mat('tuft', { color: 0x3d6b2f, roughness: 0.95 }), 2);
     for (let i = 0; i < tufts; i++) {
       const t = new THREE.Mesh(G.coneUp('low'), tuftMat);
       const s = 0.3 + rand() * 0.5;
       t.scale.set(s, s * 1.7, s);
-      place(t, sideX(rand(), 4.2, 9), -rand() * CHUNK_LEN, { sway: rand() * 6 });
+      place(t, sideX(rand(), 4.2, 9), -rand() * CHUNK_LEN);
     }
+
+    // Collapse everything staged above into a few merged draw calls.
+    c.finalise();
   }
 
   setQuality(q: Quality) {

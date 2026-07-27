@@ -462,5 +462,107 @@ console.log('\n== profile integrity ==');
   check('profile export/import preserves stats', back?.stats.runs === 60 && back?.coins === reloaded.coins);
 }
 
+console.log('\n== economy & progression ==');
+{
+  const { installStorageMock } = await import('./storageMock');
+  installStorageMock();
+  const prog = await import('../src/game/progression');
+  const { CHARACTERS, OUTFITS, POWERUPS } = prog;
+
+  let p = prog.loadProfile();
+
+  // --- you cannot buy what you cannot afford ---
+  const dear = CHARACTERS.find((c) => c.costCoins > 0)!;
+  const broke = { ...p, coins: 0, gems: 0 };
+  check('purchase blocked without funds', prog.purchaseCharacter(broke, dear.id) === null);
+
+  // --- buying deducts exactly once and grants ownership ---
+  const rich = { ...p, coins: 100000, gems: 1000 };
+  const bought = prog.purchaseCharacter(rich, dear.id)!;
+  check('purchase grants character', bought.ownedCharacters.includes(dear.id));
+  check('purchase deducts exact cost', bought.coins === rich.coins - dear.costCoins, `${bought.coins}`);
+  check('double purchase rejected', prog.purchaseCharacter(bought, dear.id) === null);
+
+  const outfit = OUTFITS.find((o) => o.costCoins > 0)!;
+  const withFit = prog.purchaseOutfit(bought, outfit.id)!;
+  check('outfit purchase deducts', withFit.coins === bought.coins - outfit.costCoins);
+  check('outfit double purchase rejected', prog.purchaseOutfit(withFit, outfit.id) === null);
+
+  // --- cannot equip or select unowned content ---
+  check('cannot select unowned character', prog.selectCharacter({ ...p, ownedCharacters: ['abebe'] }, 'kidus') === null);
+  check('cannot select unowned outfit', prog.selectOutfit({ ...p, ownedOutfits: ['shamma'] }, 'marathon') === null);
+
+  // --- power-ups: buy, equip cap, consume ---
+  let pu = { ...p, coins: 100000, inventory: { magnet: 0, shield: 0, double: 0, superJump: 0, slow: 0 }, equipped: [] as any[] };
+  for (const def of POWERUPS) pu = prog.purchasePowerUp(pu, def.id)!;
+  check('all power-ups purchasable', POWERUPS.every((d) => pu.inventory[d.id] === 1));
+  for (const def of POWERUPS) pu = prog.toggleEquip(pu, def.id) ?? pu;
+  check('equip capped at 2 slots', pu.equipped.length <= 2, `${pu.equipped.length}`);
+  const consumed = prog.consumeEquipped(pu);
+  check('starting run consumes equipped', consumed.boosters.length === pu.equipped.length);
+  check('consumed items leave inventory', consumed.boosters.every((b) => consumed.profile.inventory[b] === 0));
+  const twice = prog.consumeEquipped(consumed.profile);
+  check('cannot consume the same item twice', twice.boosters.length === 0);
+  check('inventory never goes negative',
+    Object.values(twice.profile.inventory).every((n) => (n as number) >= 0));
+
+  // --- missions: claim once only, and only when complete ---
+  let mp = prog.loadProfile();
+  const mdef = prog.missionDef(mp.missions[0].id)!;
+  check('cannot claim an incomplete mission', prog.claimMission(mp, mdef.id) === null);
+  mp = { ...mp, missions: mp.missions.map((m, i) => (i === 0 ? { ...m, progress: mdef.target } : m)) };
+  const claimed = prog.claimMission(mp, mdef.id)!;
+  check('completed mission pays out', claimed.coins === mp.coins + mdef.rewardCoins, `${claimed.coins}`);
+  check('claimed mission is marked', claimed.missions[0].claimed);
+  check('cannot double-claim a mission', prog.claimMission(claimed, mdef.id) === null);
+  check('unknown mission id rejected', prog.claimMission(claimed, 'no_such_mission') === null);
+
+  // --- achievements: claim once only ---
+  let ap = prog.loadProfile();
+  ap = { ...ap, stats: { ...ap.stats, runs: 5 } };
+  const done = prog.completedAchievements(ap);
+  check('achievements unlock from stats', done.length > 0, `${done.length}`);
+  const first = done[0];
+  const ac = prog.claimAchievement(ap, first.id)!;
+  check('achievement pays gems', ac.gems === ap.gems + first.gems, `${ac.gems}`);
+  check('cannot double-claim an achievement', prog.claimAchievement(ac, first.id) === null);
+  check('claimed achievements leave the pending list',
+    !prog.completedAchievements(ac).some((a) => a.id === first.id));
+
+  // --- daily streak ---
+  let dp = prog.loadProfile();
+  dp = { ...dp, daily: { lastClaim: null, streak: 0 } };
+  check('daily claimable when never claimed', prog.canClaimDaily(dp));
+  const d1 = prog.claimDaily(dp);
+  check('daily grants a reward', d1.reward.coins > 0 || d1.reward.gems > 0 || !!d1.reward.powerup);
+  check('daily sets streak to 1', d1.streak === 1, `${d1.streak}`);
+  check('cannot claim the daily twice', !prog.canClaimDaily(d1.profile));
+  // consecutive day continues the streak
+  const yesterday = prog.todayKey(-1);
+  const cont = prog.claimDaily({ ...d1.profile, daily: { lastClaim: yesterday, streak: 3 } });
+  check('consecutive day continues streak', cont.streak === 4, `${cont.streak}`);
+  // a gap resets it
+  const gap = prog.claimDaily({ ...d1.profile, daily: { lastClaim: prog.todayKey(-5), streak: 6 } });
+  check('missed days reset the streak', gap.streak === 1, `${gap.streak}`);
+
+  // --- long-run economy sanity: coins must come only from runs and rewards ---
+  let ep = prog.loadProfile();
+  const startCoins = ep.coins;
+  let earned = 0;
+  for (let i = 0; i < 200; i++) {
+    const r = prog.recordRun(ep, {
+      score: 500, distance: 120, beans: 10, coins: 7, specials: 1, maxCombo: 4,
+      jumps: 6, slides: 2, nearMisses: 1, powerupsUsed: 0, nightDistance: 0,
+      biomesVisited: ['coffee_highlands'], deathBy: 'rock', durationSec: 30,
+    });
+    ep = r.profile;
+    earned += 7;
+  }
+  check('run coins credited exactly', ep.coins === startCoins + earned, `${ep.coins} vs ${startCoins + earned}`);
+  check('stats stay finite over 200 runs',
+    Object.values(ep.stats).every((v) => typeof v !== 'number' || Number.isFinite(v)));
+  check('no negative balances', ep.coins >= 0 && ep.gems >= 0);
+}
+
 console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`);
 process.exit(failures === 0 ? 0 : 1);
